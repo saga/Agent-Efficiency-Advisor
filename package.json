@@ -7,6 +7,8 @@
   "scripts": {
     "build": "tsc",
     "demo": "tsx src/cli.ts",
+    "train": "tsx src/cli-train.ts",
+    "predict": "tsx src/cli-predict.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

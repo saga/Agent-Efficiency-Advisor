@@ -1,0 +1,17 @@
+{
+  "promptTokens": 1.8997168614615523,
+  "completionTokens": 5.018498666185186,
+  "contextTokens": 1.3002616681785695,
+  "toolCalls": 7.888318340796951,
+  "readFiles": 4.988250737059309,
+  "edits": 20.73059269314467,
+  "retries": 6.374560946896504,
+  "uniqueFilesRead": 2.4776017682343587,
+  "uniqueFilesEdited": 10.974943238777835,
+  "elapsedMs": 11.335468814346962,
+  "contextUtilization": 2.2017184232417764,
+  "readToEditRatio": 9.535468609800908,
+  "retryRate": 9.323559099160635,
+  "hasLoop": 0.163839782983184,
+  "subAgents": 5.787200349731602
+}

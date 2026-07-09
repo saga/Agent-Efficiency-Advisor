@@ -25,6 +25,9 @@ export * from './dashboard/Dashboard.js';
 export * from './notifications/Notifier.js';
 export * from './notifications/NodeNotifier.js';
 
+// ML model sizing
+export * from './ml/index.js';
+
 // Shared types
 export * from './types.js';
 

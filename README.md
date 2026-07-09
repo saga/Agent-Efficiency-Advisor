@@ -77,20 +77,34 @@ src/
   notifications/
     Notifier.ts         # console notifier
     NodeNotifier.ts     # OS notifications via node-notifier
+  ml/                   # CatBoost model-size recommendation
+    features.ts         # feature extraction for ML
+    dataset.ts          # synthetic dataset generation + CSV export
+    CatBoostTrainer.ts  # train CatBoost via Python bridge
+    CatBoostModel.ts    # predict with trained .cbm model
+  scripts/
+    train_catboost.py   # Python training script
+    predict_catboost.py # Python inference script
   history/              # V1/V2 historical trace analysis
     collector.ts
     featureExtractor.ts
     evaluator.ts
     outcomeSignals.ts
   types.ts              # shared types
-  cli.ts                # demo entry
+  cli.ts                # real-time observability demo
+  cli-train.ts          # CatBoost training demo
+  cli-predict.ts        # CatBoost prediction demo
 ```
 
 ## Quick start
 
 ```bash
 npm install
-npm run demo        # run mock-source CLI demo
+python3 -m pip install catboost pandas  # required for ML training
+
+npm run demo        # real-time observability demo
+npm run train       # train CatBoost model-size classifier
+npm run predict     # predict with trained model
 npm run typecheck   # verify types
 npm run build       # compile to dist/
 ```
@@ -114,7 +128,7 @@ npm run build       # compile to dist/
 | V1 | Pure trace logging | Done (history/) |
 | V2 | Async evaluator + outcome signals | Done (history/) |
 | V2.5 | Real-time tail + rules + health score | Done |
-| V3 | Historical ML model (CatBoost/Random Forest) | Planned |
+| V3 | Historical ML model (CatBoost/Random Forest) | Done |
 | V4 | Real-time recommendation + shadow evaluation | Planned |
 
 ## Design constraints
