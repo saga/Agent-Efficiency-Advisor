@@ -552,3 +552,243 @@ npm run build     # 编译到 dist/
 ## 10. 结语
 
 Agent Efficiency Advisor 的核心价值在于：**在不干扰主 Agent 的前提下，通过实时观测、规则检测、健康评分、ML 推荐、影子评估与反馈闭环，持续优化 AI 编程助手的模型选型效率**。其模块化设计使得日志源、规则、模型、Shadow Runner、Outcome 来源均可独立演进，适合作为面向 Agent 的成本与质量优化基础设施。
+
+---
+
+## 11. V5 演进：Agent Runtime Intelligence Platform
+
+V5 在 V4 的"实时推荐 + Shadow + Feedback 闭环"基础上做了根本性的架构升级：从"会话级计数器 + 单标量健康分"演进为"**事件溯源 + 状态机 + 多维健康 + 流式预测 + 插件化**"的 Agent Runtime Intelligence Platform。定位从单纯的 "Advisor"（给出模型选型建议）升级为面向 Agent 运行时的智能观测与决策平台。
+
+### 11.1 架构图
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          Agent Event Stream                                  │
+│   Copilot / Claude Code / Cursor / Codex  →  RuntimeEvent                    │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          RuntimeEngine                                       │
+│   ┌──────────────────────┐         ┌──────────────────────────────────┐      │
+│   │   State Machine       │         │   Event Sourcing                 │      │
+│   │  Idle→Planning→       │  reduce │   RuntimeEvent[] →               │      │
+│   │  Thinking→CallingTool │◀────────│   不可变 RuntimeSnapshot          │      │
+│   │  →Editing→Reviewing→  │         │   + replay / undo / time-travel  │      │
+│   │  Finished/Failed      │         └──────────────────────────────────┘      │
+│   └──────────────────────┘                                                   │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │ snapshot + events
+        ┌──────────────────────────┼──────────────────────────┐
+        ▼                          ▼                          ▼
+┌──────────────────┐     ┌────────────────────┐     ┌──────────────────────┐
+│ MetricsPipeline  │     │     RuleEngine      │     │  PredictionEngine     │
+│ MetricProvider[] │     │   RuntimeRule[]     │     │   Predictor[]         │
+│ (Prometheus 风格) │     │ (状态迁移感知规则)  │     │ Rule/Heuristic/ML/    │
+│ ContextUsage     │     │  ctx-too-large      │     │ LLM Predictor         │
+│ RetryRate        │     │  stuck-planning     │     │ → 置信度加权投票融合   │
+│ LoopDetected     │     │  tool-loop-v5       │     │ → FusedPrediction     │
+│ PromptGrowthRate │     │  phase-failed       │     │                       │
+│ ToolDiversity    │     └─────────┬──────────┘     └──────────┬───────────┘
+│ FileEntropy      │               │ Alert[]                    │
+│ SubAgentPressure │               │                            │ Recommendation
+│ StuckInPlanning  │               │                            │
+└────────┬─────────┘               │                            │
+         │ MetricSnapshot          │                            │
+         ▼                         ▼                            ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                            MultiHealth (六维)                              │
+│   Execution / Reasoning / Context / Tool / Planning / Memory              │
+│   类 CPU / Memory / Disk / Network 多维系统健康                            │
+└──────────────────────────────────┬───────────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                                Decision                                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │Recommendation│  │    Alerts    │  │  V5Dashboard │  │ Feedback Loop│  │
+│  │ (model 选型) │  │ (实时告警)    │  │ (Timeline)   │  │ (回流训练)   │  │
+│  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘  │
+└──────────────────────────────────┬───────────────────────────────────────┘
+                                   │ events / features
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          离线训练闭环                                       │
+│   FeatureStore  ──▶  OfflineTraining  ──▶  ModelRegistry  ──▶  PredictionEngine
+│  (events 落盘)       (CatBoost / ML)        (model.cbm 热更新)   (MLPredictor) │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 11.2 核心改进
+
+#### 11.2.1 Runtime State Machine
+
+将 Agent 生命周期建模为显式状态机，状态迁移本身成为系统的核心信号源，而非依赖计数器阈值。
+
+- **AgentPhase**：`Idle / Planning / Thinking / CallingTool / WaitingTool / Editing / Reviewing / Finished / Failed`
+- 每个事件经 `derivePhase` 推导下一个 phase，并记录 `PhaseTransition { from, to, at, event }`。
+- 规则可以基于"**状态迁移异常**"触发，例如：
+  - `StuckInPlanningRule`：连续多次迁移到 `Planning` 即告警；
+  - `PhaseFailedRule`：进入 `Failed` 状态即 critical 告警。
+- 这让"Agent 卡在规划阶段"、"反复进/出同一阶段"等过去靠计数器难以捕捉的语义问题，变成一等公民。
+
+类型定义见 `src/v5/runtime/types.ts`，迁移推导见 `src/v5/runtime/reducer.ts` 的 `derivePhase`。
+
+#### 11.2.2 Event Sourcing
+
+以不可变事件流为唯一事实来源，所有状态由 Reducer 派生，天然支持回放与时间旅行。
+
+- `RuntimeSnapshot`：由 `reduce(prev, event)` 逐事件产出，调用方永不直接修改字段。
+- `replay(events)`：从空快照重放全部事件，便于 schema 变更后重新水合。
+- `snapshotAt(events, version)`：取出第 N 个事件后的快照，支持 undo / time-travel。
+- `RuntimeEngine.getAtVersion(sessionId, version)`：在线时间旅行，定位历史任意时刻状态。
+- 事件流可直接喂给离线 ML 管线（FeatureStore），ML 不再依赖"会话级汇总特征"，而是直接消费原始事件序列。
+
+实现见 `src/v5/runtime/reducer.ts` 与 `src/v5/runtime/RuntimeEngine.ts`。
+
+#### 11.2.3 Plugin Architecture
+
+统一插件接口，规则、指标、预测器三类扩展点收敛到同一个 `Plugin` 概念，通过 `PluginRegistry` 注册。
+
+```ts
+interface Plugin {
+  id: string;
+  name: string;
+  rules?: RuntimeRule[];
+  metricProviders?: MetricProvider[];
+  predictors?: Predictor[];
+}
+```
+
+- `PluginRegistry.register(plugin)` 返回反注册函数，支持热插拔。
+- `CorePlugins` 把内置 `CoreRulesPlugin / CoreMetricsPlugin / CorePredictorsPlugin` 打包，CLI 一行注册。
+- 未来可接入：Copilot / Claude / Cursor / Codex 专用日志插件、Git 插件、Jira 插件、CI 插件，以及自定义 LLM/ML 预测插件。
+
+实现见 `src/v5/plugins/PluginRegistry.ts` 与 `src/v5/plugins/CorePlugins.ts`。
+
+#### 11.2.4 Derived Metrics Pipeline
+
+引入 `MetricProvider` 抽象，类似 Prometheus Exporter：每个 Provider 只负责从一个 `RuntimeSnapshot` 计算一个派生指标。
+
+```ts
+interface MetricProvider {
+  id: string;
+  compute(snapshot: RuntimeSnapshot): number;
+  description?: string;
+}
+```
+
+`MetricsPipeline` 聚合所有 Provider，输出 `MetricSnapshot { values, descriptions }`，单个 Provider 异常不会污染其他指标（捕获后填 `NaN`）。
+
+内置 MetricProvider（见 `src/v5/plugins/metrics/index.ts`）：
+
+| Provider | 含义 |
+|----------|------|
+| `ContextUsageProvider` | 上下文 token 占用率（0-1） |
+| `RetryRateProvider` | 工具调用与编辑的重试率 |
+| `LoopDetectedProvider` | 近期工具序列是否出现循环（1/0） |
+| `PromptGrowthRateProvider` | Prompt token 增长率（归一化到 50k） |
+| `ToolDiversityProvider` | 唯一工具数 / 总调用数 |
+| `FileEntropyProvider` | 读/写文件数熵（归一化到 30） |
+| `SubAgentPressureProvider` | 子 Agent 数压力（归一化到 5） |
+| `StuckInPlanningProvider` | 是否长期卡在 Planning 阶段（1/0） |
+
+#### 11.2.5 Prediction Pipeline
+
+`PredictionEngine` 聚合多个 `Predictor`，通过置信度加权投票融合出最终推荐，避免单预测器偏差。
+
+```ts
+interface Predictor {
+  id: string;
+  predict(ctx: PredictionContext): Promise<Recommendation> | Recommendation;
+}
+```
+
+- `RulePredictor`：基于快照阈值的规则型预测。
+- `HeuristicPredictor`：基于加权复杂度评分的启发式预测。
+- 未来：`MLPredictor`（CatBoost / LightGBM）、`LLMPredictor`（直接调用 LLM 判断）。
+- 融合策略：按 `confidence` 加权累计 `{mini, medium, large}` 三档票数，取最高权重档作为 `fused`，并归一化置信度，`source` 标注为 `fusion(rule+heuristic+...)`。
+- `Recommendation` 新增 `source` 字段，便于追溯每个推荐的来源。
+
+实现见 `src/v5/plugins/predictors/index.ts`。
+
+#### 11.2.6 多维 Health
+
+把 V4 的单一标量 HealthScore 拆成六维，类似操作系统的 CPU / Memory / Disk / Network 指标体系。
+
+| 维度 | 关注点 |
+|------|--------|
+| Execution | 重试率、工具循环 |
+| Reasoning | Prompt 增长、是否卡在规划 |
+| Context | 上下文 token 占用率 |
+| Tool | 工具多样性、循环 |
+| Planning | 是否长期卡在 Planning |
+| Memory | 文件熵、子 Agent 压力 |
+
+每个维度输出 `0-100` 分与 `Excellent / Good / Warning / Critical` 标签，`overall` 取六维均值。`V5Dashboard` 直接渲染六维明细，便于定位"哪个维度在拖后腿"。
+
+实现见 `src/v5/health/MultiHealth.ts`。
+
+#### 11.2.7 Streaming Sliding Window
+
+不再等 `session_end` 才出推荐，而是基于滑动窗口在事件流上实时触发预测。
+
+`SlidingWindow` 支持三种触发条件：
+
+- `maxEvents`：新增事件数阈值；
+- `maxTokenDelta`：新增 token 阈值；
+- `maxMs`：时间间隔阈值（且必须有新事件）。
+
+`check(snapshot)` 返回 `{ shouldPredict, reason }`，`markPredicted(snapshot)` 重置基线。`cli-v5.ts` 中以 `{ maxEvents: 3, maxMs: 1000, maxTokenDelta: 5000 }` 配置，实现"每 3 个事件或 5k token 或 1 秒"一次的流式刷新。
+
+实现见 `src/v5/streaming/SlidingWindow.ts`，同时提供 `makeEvent` 辅助构造事件。
+
+#### 11.2.8 Agent Timeline
+
+类似 Chrome DevTools Performance 面板的时间线，把 phase 迁移与事件序列可视化。
+
+- `buildTimeline(snapshot)`：为每个事件标注其发生时的 phase，并在发生迁移的事件上附加 `from → to` 注解。
+- `renderTimeline(snapshot, width)`：用单字符 `· P T C W E R F X` 渲染 phase 条带，下方逐行列出 `时间 phase 事件摘要 [迁移注解]`。
+- 便于复盘"Agent 在哪一步卡住、何时进入循环、何时失败"，是从"指标告警"到"根因定位"的关键桥梁。
+
+实现见 `src/v5/timeline/Timeline.ts`。
+
+#### 11.2.9 最终定位升级
+
+从 "Agent Efficiency Advisor"（只负责给模型选型建议）升级为 **Agent Runtime Intelligence Platform**：
+
+- 不只输出模型推荐，还输出实时告警、多维健康、时间线、反馈回流。
+- 事件溯源 + 状态机让平台天然支持 replay / time-travel / 离线分析，ML 可直接读 events。
+- 插件化让平台可承载 Copilot / Claude / Cursor / Codex / Git / Jira / CI 等多源生态。
+- CLI 演示入口迁移到 `src/cli-v5.ts`，仪表盘迁移到 `src/v5/dashboard/V5Dashboard.ts`。
+
+### 11.3 关键文件
+
+| 路径 | 职责 |
+|------|------|
+| `src/v5/runtime/types.ts` | `RuntimeSnapshot` / `AgentPhase` / `Plugin` 等核心接口 |
+| `src/v5/runtime/reducer.ts` | Event Sourcing reducer（reduce / replay / snapshotAt） |
+| `src/v5/runtime/RuntimeEngine.ts` | 核心引擎，支持 time-travel / rehydrate / subscribe |
+| `src/v5/plugins/PluginRegistry.ts` | 统一插件注册与反注册 |
+| `src/v5/plugins/metrics/` | `MetricProvider` 实现 + `MetricsPipeline` 聚合 |
+| `src/v5/plugins/predictors/` | `Predictor` 实现 + `PredictionEngine` 融合 |
+| `src/v5/plugins/rules/index.ts` | 状态机感知的内置规则 |
+| `src/v5/plugins/CorePlugins.ts` | 内置插件打包 |
+| `src/v5/health/MultiHealth.ts` | 六维健康评分 |
+| `src/v5/streaming/SlidingWindow.ts` | 流式预测滑动窗口 |
+| `src/v5/timeline/Timeline.ts` | DevTools 风格时间线 |
+| `src/v5/dashboard/V5Dashboard.ts` | V5 仪表盘渲染 |
+| `src/cli-v5.ts` | V5 Demo 入口 |
+
+### 11.4 V1-V5 演进对照
+
+```text
+V1 离线 trace
+   → V2 离线评估
+      → V2.5 实时规则观测
+         → V3 历史 ML 模型
+            → V4 实时 ML + Shadow + Feedback
+               → V5 Runtime Intelligence（事件溯源 + 状态机 + 多维健康 + 流式预测 + 插件化）
+```
+
+V5 的本质变化是把"会话级聚合 + 单标量健康分"替换为"**事件级流式 + 状态机 + 多维健康 + 融合预测**"，并把所有扩展点统一到 Plugin 接口下，使平台具备承载多 Agent 生态与离线/在线 ML 闭环的能力。

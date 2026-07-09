@@ -33,3 +33,6 @@ export * from './types.js';
 
 // Historical analysis (V1/V2)
 export * as history from './history/index.js';
+
+// V5 Runtime Intelligence Platform
+export * as v5 from './v5/index.js';

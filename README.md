@@ -112,6 +112,7 @@ npm run demo        # real-time observability demo (rules)
 npm run train       # train CatBoost model-size classifier (uses .venv)
 npm run predict     # predict with trained model (uses .venv)
 npm run v4          # real-time recommendation + shadow evaluation + feedback
+npm run v5          # Agent Runtime Intelligence (state machine + event sourcing + plugins)
 npm run typecheck   # verify types
 npm run build       # compile to dist/
 ```
@@ -137,6 +138,7 @@ npm run build       # compile to dist/
 | V2.5 | Real-time tail + rules + health score | Done |
 | V3 | Historical ML model (CatBoost/Random Forest) | Done |
 | V4 | Real-time recommendation + shadow evaluation | Done |
+| V5 | Agent Runtime Intelligence (state machine + event sourcing + plugins) | Done |
 
 ## Design constraints
 
