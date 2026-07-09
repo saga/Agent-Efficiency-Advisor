@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { ModelSizeFeatures, ModelSizeLabel } from './features.js';
 import { INDEX_LABEL } from './features.js';
+import { resolvePythonExecutable } from './pythonResolver.js';
 
 export interface PredictionResult {
   classIndex: number;
@@ -27,7 +28,7 @@ export class CatBoostModel {
       ? path.resolve(this.options.pythonScript)
       : path.resolve(process.cwd(), 'scripts/predict_catboost.py');
 
-    const python = process.platform === 'win32' ? 'python' : 'python3';
+    const python = resolvePythonExecutable();
     const args = [
       pythonScript,
       '--model', this.options.modelPath,

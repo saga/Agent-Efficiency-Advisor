@@ -1,0 +1,12 @@
+[project]
+name = "agent-efficiency-advisor"
+version = "0.1.0"
+description = "Python runtime for CatBoost model training and inference."
+requires-python = ">=3.9"
+dependencies = [
+  "catboost>=1.2.0",
+  "pandas>=2.0.0",
+]
+
+[tool.uv]
+dev-dependencies = []

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { TrainingSample } from './dataset.js';
 import { generateSyntheticDataset, saveDataset } from './dataset.js';
+import { resolvePythonExecutable } from './pythonResolver.js';
 
 export interface TrainOptions {
   trainCsv?: string;
@@ -69,7 +70,7 @@ export class CatBoostTrainer {
       args.push('--test-csv', options.testCsv);
     }
 
-    const python = process.platform === 'win32' ? 'python' : 'python3';
+    const python = resolvePythonExecutable();
     const stdout = await execPython([python, ...args]);
     const result = JSON.parse(stdout) as TrainResult;
     return result;

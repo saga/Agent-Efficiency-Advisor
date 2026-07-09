@@ -100,11 +100,12 @@ src/
 
 ```bash
 npm install
-python3 -m pip install catboost pandas  # required for ML training
+uv venv              # create .venv
+uv pip install       # install catboost + pandas from pyproject.toml
 
 npm run demo        # real-time observability demo
-npm run train       # train CatBoost model-size classifier
-npm run predict     # predict with trained model
+npm run train       # train CatBoost model-size classifier (uses .venv)
+npm run predict     # predict with trained model (uses .venv)
 npm run typecheck   # verify types
 npm run build       # compile to dist/
 ```

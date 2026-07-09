@@ -28,7 +28,7 @@ def main():
         sys.exit(1)
 
     probabilities = model.predict_proba(df[required])
-    predictions = model.predict(df[required]).astype(int)
+    predictions = model.predict(df[required]).astype(int).flatten()
 
     out = []
     for pred, probs in zip(predictions, probabilities):
