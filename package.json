@@ -1,0 +1,23 @@
+{
+  "name": "agent-efficiency-advisor",
+  "version": "0.1.0",
+  "description": "Collect agent traces, evaluate task complexity, and predict smaller-model sufficiency.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "demo": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/node-notifier": "^8.0.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "chokidar": "^5.0.0",
+    "node-notifier": "^10.0.1",
+    "tail-file": "^1.4.16"
+  }
+}
