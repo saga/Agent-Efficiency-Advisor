@@ -82,6 +82,11 @@ src/
     dataset.ts          # synthetic dataset generation + CSV export
     CatBoostTrainer.ts  # train CatBoost via Python bridge
     CatBoostModel.ts    # predict with trained .cbm model
+    CatBoostAdvisor.ts  # real-time recommendation from SessionState
+    shadow/             # shadow evaluation framework
+      ShadowRunner.ts
+    feedback/           # outcome → training data feedback loop
+      FeedbackCollector.ts
   scripts/
     train_catboost.py   # Python training script
     predict_catboost.py # Python inference script
@@ -103,9 +108,10 @@ npm install
 uv venv              # create .venv
 uv pip install       # install catboost + pandas from pyproject.toml
 
-npm run demo        # real-time observability demo
+npm run demo        # real-time observability demo (rules)
 npm run train       # train CatBoost model-size classifier (uses .venv)
 npm run predict     # predict with trained model (uses .venv)
+npm run v4          # real-time recommendation + shadow evaluation + feedback
 npm run typecheck   # verify types
 npm run build       # compile to dist/
 ```
@@ -130,7 +136,7 @@ npm run build       # compile to dist/
 | V2 | Async evaluator + outcome signals | Done (history/) |
 | V2.5 | Real-time tail + rules + health score | Done |
 | V3 | Historical ML model (CatBoost/Random Forest) | Done |
-| V4 | Real-time recommendation + shadow evaluation | Planned |
+| V4 | Real-time recommendation + shadow evaluation | Done |
 
 ## Design constraints
 

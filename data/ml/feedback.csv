@@ -1,0 +1,4 @@
+promptTokens,completionTokens,contextTokens,toolCalls,readFiles,edits,retries,uniqueFilesRead,uniqueFilesEdited,elapsedMs,contextUtilization,readToEditRatio,retryRate,hasLoop,subAgents,label
+16000,2400,18400,6,5,4,2,4,2,8395,0.071875,1.25,0.3333333333333333,0,0,2
+16000,2400,18400,6,5,4,2,4,2,9460,0.071875,1.25,0.3333333333333333,0,0,1
+16000,2400,18400,6,5,4,2,4,2,9460,0.071875,1.25,0.3333333333333333,0,0,2

@@ -134,6 +134,15 @@ export interface AdvisorOutput {
   health: HealthScore;
 }
 
+export interface OutcomeSignal {
+  testPassed: boolean;
+  committed: boolean;
+  noRetry: boolean;
+  noRevert: boolean;
+  followUpEditCount?: number;
+  timeToNextPromptMs?: number;
+}
+
 // Legacy V1/V2 types (kept for historical analysis)
 export interface ToolCall {
   tool: string;
