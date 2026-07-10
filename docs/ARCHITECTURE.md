@@ -792,3 +792,204 @@ V1 离线 trace
 ```
 
 V5 的本质变化是把"会话级聚合 + 单标量健康分"替换为"**事件级流式 + 状态机 + 多维健康 + 融合预测**"，并把所有扩展点统一到 Plugin 接口下，使平台具备承载多 Agent 生态与离线/在线 ML 闭环的能力。
+
+---
+
+## 12. V5.2 Trustworthy Decision Engine
+
+V5.2 不再加新功能，而是把已有的 Recommendation / Confidence / Health / ML / Feedback 做到"**可信**"：有依据、可解释、可量化、可验证、可自我校准。核心理念是"从给出建议升级为给出可被审计的决策"。
+
+### 12.1 设计理念
+
+V5 已具备 Recommendation、Confidence、Health、ML、Feedback 等能力，但它们仍停留在"给一个数 / 给一个标签"的层面，缺乏可审计性与可校准性。V5.2 不再横向扩张功能，而是纵向深挖"可信度"：
+
+- **有依据**：每个决策都要能追溯到具体特征贡献与反事实分析。
+- **可解释**：不再是一个黑盒概率，而是给出 SHAP-like 特征贡献 + Counterfactual 反事实解释。
+- **可量化**：置信度经过 Temperature Scaling 校准，并用 ECE / Brier Score 度量校准质量。
+- **可验证**：通过 Shadow Sampling 与 Evaluation 持续验证决策质量，输出 A-F 等级的 Advisor Scorecard。
+- **可自我校准**：通过 Online Learning + Drift Detection（Model Drift / Concept Drift）实现自我修正。
+
+### 12.2 九大深挖方向
+
+#### 12.2.1 Decision Engine
+
+从 classifier 升级为 decision。原有的 `Recommendation` 只输出 `{ model, confidence, reasons }`，V5.2 在其上构建 **Rich Recommendation**，补充：
+
+- **alternatives**：次优候选模型及其代价/风险。
+- **risk**：`RiskAssessment`，量化选择该模型可能带来的失败/超时/成本风险。
+- **expectedOutcome**：`ExpectedOutcome`，预测选择该模型后的预期表现（成功率、耗时、token 消耗）。
+- **counterfactual**：`CounterfactualExplanation`，反事实解释"若改用另一档模型，结果会如何"。
+
+实现方式：在 `DecisionEngine.decide()` 中串联 Fusion → Calibration → Explainability → Risk/ExpectedOutcome/Counterfactual，产出完整的 `TrustDecision`。
+
+#### 12.2.2 Confidence Calibration
+
+原始分类器输出的置信度往往 over-confident，V5.2 引入校准管线：
+
+- **Temperature Scaling**：学习单一温度参数 `T`，对 logits 除以 `T` 后再 softmax，平滑过置信。
+  - `calibrateTemperature(logits, labels)`：在验证集上通过牛顿法优化 `T`，最小化 NLL。
+  - `applyTemperature(logits, T)`：在线推理时套用学到的 `T`。
+- **ECE（Expected Calibration Error）**：将预测按置信度分桶，计算每桶"平均置信度 - 平均准确度"的加权绝对差，衡量校准误差。
+  - `computeEce(predictions, labels, nBins=15)`。
+- **Brier Score**：均方误差形式的概率校准指标，越低越好。
+  - `computeBrierScore(probabilities, labels)`。
+
+三者共同回答"模型的置信度是否可信"这一问题。
+
+#### 12.2.3 Decision Fusion
+
+V5 的 `PredictionEngine` 仅做置信度加权投票，V5.2 提供三种可切换的融合策略：
+
+- **Weighted Voting**：按各 Predictor 的置信度或权重加权累计票数，取最高权重档。简单、可解释、鲁棒。
+- **Bayesian Fusion**：把每个 Predictor 的输出视作独立似然，按贝叶斯公式融合为后验概率。适合 Predictor 间相互独立且各自有合理先验的场景。
+- **Stacking**：训练一个元学习器（meta-learner）以各 Predictor 的输出为输入，学习最优组合权重。表达能力最强，但需要额外训练数据与离线流程。
+
+实现方式：`fusePredictions(predictions, strategy, options)` 根据 `strategy` 分派到 `weightedVoting` / `bayesianFusion` / `stackingFusion`。
+
+#### 12.2.4 Explainability
+
+决策必须可解释，V5.2 提供两类解释：
+
+- **SHAP-like 特征贡献**：`featureContributions(features, model)` 近似 SHAP，把最终决策分解为各特征的边际贡献，输出 `Reason[]`（含特征名、贡献值、方向）。用户能直接看到"上下文占用率贡献了 +0.3，重试率贡献了 -0.1"。
+- **Counterfactual 反事实解释**：`findCounterfactual(features, model, desiredLabel)` 在特征空间中搜索"最小改动使得预测变为目标档位"的反事实样本，回答"如果上下文减少 X，就能降到 mini"这类问题。
+
+两者结合，让决策从"模型说用 large"升级为"模型说用 large，因为 A/B/C 三个特征；若把 B 降下来，就能降到 medium"。
+
+#### 12.2.5 Feature Engineering
+
+不再依赖模型自带的 feature importance（容易被 correlated 特征误导），改用 **Permutation Importance** 衡量特征真实重要性：
+
+- `permutationImportance(features, labels, predictFn, nRepeats=10)`：对每个特征，随机打乱其取值后重新预测，衡量指标下降幅度。下降越多说明该特征越重要。
+- 输出按重要性排序的特征列表，可用于：特征筛选、监控特征退化、解释模型行为、指导数据采集。
+
+#### 12.2.6 HealthScore
+
+V4/V5 的 HealthScore 基于固定经验公式（如 `contextUtilization * 0.4 + retryRate * 0.2 + ...`），V5.2 升级为 **Composite Index**：
+
+- 保留经验公式作为 baseline；
+- 预留四种权重学习扩展点：
+  - **AHP（层次分析法）**：领域专家两两比较维度重要性，推导权重。
+  - **Entropy Weight**：根据各维度取值的离散程度自动赋权，离散度越大权重越高。
+  - **PCA**：用主成分载荷作为权重，捕捉维度间共线性。
+  - **ML 学习权重**：用回归/排序模型从 (维度值, 真实 outcome) 直接学权重。
+
+接口上保留 `computeHealthScore(state, metrics, weights?)` 的可注入权重，使其从"固定公式"变为"可学习/可替换的复合指标"。
+
+#### 12.2.7 Shadow Sampling
+
+V4 的 Shadow 采样率是固定的，V5.2 提供四种采样策略，由 `decideSample(snapshot, strategy)` 决定是否采样：
+
+- **Random**：按固定概率 `p` 采样，最简单、无偏。
+- **Confidence**：对模型置信度处于"边界区"（既不高也不低）的样本优先采样，信息量最大。
+- **Uncertainty**：对预测熵高 / 多预测器分歧大的样本优先采样，聚焦不确定区域。
+- **Active**：结合置信度 + 不确定性 + 历史采样覆盖率，主动选择最值得标注的样本。
+
+这样 Shadow 预算可被更聪明地分配，用更少的成本收集更有价值的反事实样本。
+
+#### 12.2.8 Feedback
+
+V5.2 把 Feedback 从"批量回流"升级为"在线学习 + 漂移检测"：
+
+- **Online Learning**：新样本到达后增量更新模型权重（或触发增量重训练），缩短反馈到生效的延迟。
+- **Drift Detection**：
+  - **Model Drift**：`detectModelDrift(recentMetrics, baselineMetrics)` 比较近期预测分布与基线分布（如准确率、置信度均值、类别分布），若偏移超过阈值则告警。
+  - **Concept Drift**：`detectConceptDrift(recentSamples, baselineSamples)` 比较 `P(Y|X)` 是否发生变化（如同样特征的真实 label 分布偏移），若发生则说明旧模型已失效，必须重训练。
+
+漂移检测触发后，自动反馈到训练管线，形成"检测 → 重训练 → 校准 → 再评估"的闭环。
+
+#### 12.2.9 Evaluation
+
+V5.2 建立统一的评估体系，不再只看准确率：
+
+- **统计指标**：Accuracy / Precision / Recall / F1 / Brier / ECE / ConfusionMatrix，由 `evaluate(predictions, labels)` 一次性产出。
+- **业务指标**：成本节省率、推荐采纳率、Shadow 验证通过率、用户满意度等。
+- **Advisor Scorecard**：`buildScorecard(metrics)` 把上述指标综合为 A-F 等级的评分卡：
+  - **A**：各项指标均优秀，决策高度可信。
+  - **B**：整体良好，个别维度需关注。
+  - **C**：存在明显短板（如 ECE 过高 / Recall 偏低）。
+  - **D**：多项指标不达标，需重训练或调参。
+  - **F**：发生严重漂移或准确率崩塌，需立即介入。
+
+Scorecard 既给运维一个"红黄绿灯"，也给模型治理提供可量化的准入/退出门槛。
+
+### 12.3 架构图
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              Predictors                                       │
+│   RulePredictor  HeuristicPredictor  MLPredictor  LLMPredictor  ...           │
+└──────────────────────────────────┬───────────────────────────────────────────┘
+                                   │  Recommendation[]
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        DecisionFusion                                         │
+│       weightedVoting  /  bayesianFusion  /  stackingFusion                    │
+└──────────────────────────────────┬───────────────────────────────────────────┘
+                                   │  fused logits / probabilities
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                    Temperature Scaling  (calibrate T)                         │
+│                          applyTemperature(logits, T)                          │
+└──────────────────────────────────┬───────────────────────────────────────────┘
+                                   │  Calibrated Probabilities
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                            Explainability                                     │
+│   SHAP-like Reasons  +  Counterfactual  +  Risk  +  ExpectedOutcome           │
+│          featureContributions     findCounterfactual                          │
+└──────────────────────────────────┬───────────────────────────────────────────┘
+                                   │
+                                   ▼
+                           ┌────────────────┐
+                           │  TrustDecision │
+                           └───────┬────────┘
+                                   │
+        ┌──────────────────────────┴───────────────────────────┐
+        ▼                                                      ▼
+┌──────────────────────────────┐               ┌──────────────────────────────┐
+│     EvaluationSamples        │               │       Feedback Loop          │
+│  (Shadow Sampling 采样)      │               │   Online Learning            │
+│  random/confidence/          │               │   + Drift Detection          │
+│  uncertainty/active          │               │   (Model Drift +             │
+└──────────┬───────────────────┘               │    Concept Drift)            │
+           │                                   └──────────────┬───────────────┘
+           ▼                                                  │
+┌──────────────────────────────────────────┐                  │
+│  ECE  /  Brier  /  F1  /  Scorecard      │                  │
+│  (A-F 等级)                               │                  │
+└──────────┬───────────────────────────────┘                  │
+           │                                                  │
+           └──────────────▶ 触发 Drift Detection ──────────────┘
+                                   │
+                                   ▼
+                          反馈重训练 / 重校准
+```
+
+### 12.4 关键文件
+
+| 路径 | 职责 |
+|------|------|
+| `src/v5/trust/types.ts` | `TrustDecision` / `Reason` / `RiskAssessment` / `ExpectedOutcome` / `CounterfactualExplanation` 等类型定义 |
+| `src/v5/trust/ConfidenceCalibration.ts` | `calibrateTemperature` / `applyTemperature` / `computeEce` / `computeBrierScore` |
+| `src/v5/trust/DecisionFusion.ts` | `fusePredictions` + `weightedVoting` / `bayesianFusion` / `stackingFusion` |
+| `src/v5/trust/Explainability.ts` | `featureContributions`（SHAP-like） + `findCounterfactual` |
+| `src/v5/trust/FeatureImportance.ts` | `permutationImportance` 排序真实重要特征 |
+| `src/v5/trust/Evaluation.ts` | `evaluate`（Accuracy / P / R / F1 / Brier / ECE / ConfusionMatrix） + `buildScorecard` |
+| `src/v5/trust/SamplingStrategy.ts` | `decideSample`（random / confidence / uncertainty / active） |
+| `src/v5/trust/DriftDetector.ts` | `detectModelDrift` + `detectConceptDrift` |
+| `src/v5/trust/DecisionEngine.ts` | `DecisionEngine.decide()` 整合 Fusion + Calibration + Explainability + Risk + Counterfactual |
+| `src/v5/trust/TrustRenderer.ts` | `renderTrustDecision` / `renderScorecard` / `renderEvaluationMetrics` / `renderDrift` |
+| `src/cli-trust.ts` | `npm run trust` 端到端 Demo 入口 |
+
+### 12.5 演进总结
+
+```text
+V1  Trace Collection        采集 Agent 运行轨迹，落盘 JSONL
+   → V2  Offline Evaluation  离线评估任务复杂度与小模型替代可行性
+      → V3  Realtime Observability  实时 tail + 规则引擎 + Health Score
+         → V4  ML + Shadow + Feedback  CatBoost 推荐 + 反事实验证 + 样本回流
+            → V5  Agent Runtime Intelligence  事件溯源 + 状态机 + 多维健康 + 流式预测 + 插件化
+               → V5.2  Trustworthy Decision Engine  可信决策：校准 + 融合 + 可解释 + 可验证 + 自我校准
+```
+
+V5.2 的本质是把 V5 已有的"给出推荐"能力，升级为"给出**可信、可解释、可校准、可验证**的决策"。不再追求功能广度，而是把每一条决策都打磨到"有依据、可解释、可量化、可验证、可自我校准"的标准，使 Advisor 真正成为可被审计、可被信任的决策引擎。
