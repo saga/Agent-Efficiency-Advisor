@@ -1243,3 +1243,250 @@ V1  Trace Collection
 ```
 
 V6 的本质变化是把"决策能力"暂时放下，先把**统一事件模型**与**可版本化的特征存储**这两块基础设施落到 SQLite。从此 Embedding、CatBoost、GPT、Workflow Mining、Session Graph、Context ROI、趋势分析都不再各自重新解析日志，而是建立在同一份 Event 与 Feature 之上，使平台真正具备"AI Development Observatory"的底座。
+
+---
+
+## 14. V6 全五层架构（Embedding + ML + LLM）
+
+V6 第 13 章把 Event Store 与 Feature Store 落到 SQLite。本章覆盖 `v6.md` 的第 3～11 节，把剩余三层补齐：
+
+```
+Layer 1  Event Store        ─┐
+Layer 2  Feature Store      ─┤  见第 13 章
+Layer 3  Embedding Store    ─┤  本章 14.1
+Layer 4  ML / Analytics     ─┤  本章 14.2
+Layer 5  LLM Insights       ─┘  本章 14.3
+```
+
+三层共享同一个 SQLite 文件（默认 `./data/aea-v6.db`），通过 `schema.ts` 的 `SCHEMA_VERSION=2` 增加 `embeddings` 表。
+
+### 14.1 Layer 3：Embedding Store
+
+**目标**：把 Session / Prompt / Workflow / Error / Workspace 实体转化为向量，支持 cosine 相似度检索，实现"相似 Session 召回"与"异常 Session 比对"。核心约束：**不依赖外部向量数据库**，纯 SQLite + TypeScript 实现。
+
+#### 14.1.1 Schema
+
+`schema.ts` 在 `SCHEMA_VERSION < 2` 时建 `embeddings` 表：
+
+```sql
+CREATE TABLE IF NOT EXISTS embeddings (
+  entity_id   TEXT    NOT NULL,
+  entity_type TEXT    NOT NULL,   -- session | prompt | workflow | error | workspace
+  model       TEXT    NOT NULL,   -- e.g. 'feature-v1'
+  dim         INTEGER NOT NULL,
+  vector      TEXT    NOT NULL,   -- JSON float array
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (entity_id, entity_type, model)
+);
+CREATE INDEX IF NOT EXISTS idx_embeddings_type ON embeddings(entity_type);
+```
+
+向量以 JSON 浮点数组存储，避免引入 blob 编码成本。规模在数千 session 量级时，全表扫描 + TypeScript cosine 计算足够快；超过该量级再考虑 sqlite-vec 或迁移到专用向量库。
+
+#### 14.1.2 EmbeddingStore
+
+`src/embedding/EmbeddingStore.ts` 提供：
+
+| 方法 | 作用 |
+|------|------|
+| `write(row)` | upsert 一条向量 |
+| `read(entityId, entityType, model?)` | 读取单条 |
+| `readAll(entityType, model?)` | 全量读取 |
+| `search(queryVector, entityType, topK=10, model?)` | cosine 相似度 Top-K |
+| `count(entityType, model?)` | 计数 |
+
+`search` 的实现：读出该类型全部向量 → 逐条 `cosineSimilarity` → 降序排序 → 取前 K。同时导出 `cosineSimilarity(a, b)` 与 `normalize(v)` 工具函数，供其他模块复用。
+
+#### 14.1.3 EmbeddingPipeline：Feature-based Embedding
+
+`src/embedding/EmbeddingPipeline.ts` 采用 **Feature-based Embedding** 策略：不调用 Embedding API，直接从 BehaviorFeature + SessionFeature 抽取归一化向量。
+
+**Session 向量（10 维）**——`SESSION_VECTOR_KEYS`：
+
+```
+workflowEntropy, retryBurstScore, toolSwitchFrequency, editAfterAcceptRatio,
+avgReadBeforeAsk, avgRetryDistance, contextExpansionSpeed, workflowLength,
+acceptRate, retryRate
+```
+
+其中 count-like 特征（`avgReadBeforeAsk` / `avgRetryDistance` / `contextExpansionSpeed` / `workflowLength` / `retryRate`）用 `Math.log1p` 压缩量纲，所有向量 L2 归一化。最终向量是 Session 的"行为指纹"——同样的事件计数可以产生截然不同的向量，这正是 V6 区别于传统 Aggregation Feature 的关键。
+
+**Prompt 向量（5 维）**——`PROMPT_VECTOR_KEYS`：`promptTokens, completionTokens, retryCount, acceptCount, editDistance`。
+
+`computeAll()` 一次性为所有 session / prompt 生成向量并写入 Store；`findSimilarSessions(sessionId, topK)` 排除自身后返回相似 session 列表。
+
+#### 14.1.4 设计取舍
+
+- **为何不调用 Embedding API**：v6.md 第 3 节明确说"Embedding 可以从 Event / Feature 重新计算，不必作为长期真相源"。Feature-based 方案完全离线、零成本、可复现。当需要语义级相似（如自然语言 prompt 聚类）时，可在同表用不同 `model`（如 `text-embedding-3-small`）并存一份语义向量，两套互不干扰。
+- **为何不用 sqlite-vec**：当前数据规模（session 数 < 10k）下纯 TS 实现足够；引入 native 扩展会增加部署复杂度。架构上预留了替换空间——`EmbeddingStore.search` 是唯一需要替换的方法。
+
+### 14.2 Layer 4：ML / Analytics Engine
+
+**目标**：在 Feature / Embedding 之上做行为建模、工作流挖掘、趋势分析、失败分类、Context ROI，最终产出一份结构化 `AnalyticsReport`，供 LLM 层解释。
+
+#### 14.2.1 BehaviorModel（一阶 Markov）
+
+`src/ml/BehaviorModel.ts` 实现 v6.md 第 5 节。从所有 session 的事件类型序列学习转移矩阵 `P(next | current)`，输出：
+
+- `states`：所有出现过的 `IDEEventType`
+- `transitions`：`(from, to, count, probability)` 排序表
+- `startDistribution`：首事件分布
+- `topWorkflows`：从 top start state 贪心生成典型路径
+- `anomalyScore`：所有 session 平均负对数似然（归一化到 [0,1]）
+
+`scoreSequence(types)` 给定一段事件序列，返回其对数概率，用于异常检测。
+
+#### 14.2.2 WorkflowMiner（Heuristic Miner）
+
+`src/ml/WorkflowMiner.ts` 实现 v6.md 第 6 节。算法：
+
+1. 遍历所有 session 事件序列，统计 **directly-follows 频率** `freq[A→B]`。
+2. 计算 **dependency metric**：`(freq[A→B] - freq[B→A]) / (freq[A→B] + freq[B→A] + 1)`，范围 (-1, 1)，越接近 1 表示 A 真正"导致" B。
+3. 抽取 **frequent paths**：从依赖强度 top 起贪心延伸，输出 top 5。
+4. 抽取 **failure patterns**：含 retry 且无 accept，或以 reject 结尾的路径。
+
+输出 `WorkflowGraph`：`nodes`（含 inDegree / outDegree / frequency）、`edges`（含 frequency / dependency）、`frequentPaths`、`failurePatterns`。这是后续 LLM 根因分析与日报的核心素材。
+
+#### 14.2.3 TrendAnalysis
+
+`src/ml/TrendAnalysis.ts` 实现 v6.md 第 10 节。按 `YYYY-MM-DD` 聚合事件，每天计算：
+
+- `acceptRate` / `retryRate` / `avgTokens` / `sessionCount`
+
+对每个时间序列做线性回归求 `slope`，按 `0.001 * mean` 阈值判定 `increasing / decreasing / stable`；再用 7 日滚动窗口平滑。`healthDirection` 的判定规则：
+
+- acceptRate 上升 且 retryRate 未上升 → `improving`
+- retryRate 上升 且 acceptRate 未上升 → `declining`
+- 否则 → `stable`
+
+#### 14.2.4 AnalyticsEngine（编排器）
+
+`src/ml/AnalyticsEngine.ts` 是 Layer 4 的入口。它接收 EventStore + FeatureStore + EmbeddingStore，依次跑：
+
+1. `BehaviorModel.train(sessions)`
+2. `WorkflowMiner.mine(sessions)`
+3. `TrendAnalysis.analyze(events)`
+4. **Failure Classification**（规则版，CatBoost 可插拔）：
+   - `retry_loop`：`retryBurstScore > 0.5 && retryRate > 0.3`
+   - `context_explosion`：`contextExpansionSpeed > 500`
+   - `wrong_context`：`workflowEntropy < 0.7 && retryRate > 0.2`
+   - `user_cancel`：以 reject 结尾且无 accept
+5. **Context ROI**：对每个数值特征计算与 `acceptRate` 的 Pearson 相关系数，过滤 `|corr| > 0.1`，作为 SHAP 的轻量替代。
+
+最终产出 `AnalyticsReport`，其中 `llmPayload` 是约 500 token 的紧凑 JSON：
+
+```json
+{
+  "sessions": 8, "events": 76,
+  "avgAcceptRate": 0.389, "avgRetryRate": 1.611,
+  "healthDirection": "declining",
+  "topWorkflow": "session_start→read_file→...",
+  "topFailure": "retry_loop",
+  "topFailurePattern": "session_start→chat→completion→retry→reject→session_end",
+  "anomalyScore": 0.083,
+  "contextROI": [{"editAfterAcceptRatio": 1}, {"retryBurstScore": -1}],
+  "trendAcceptRate": "decreasing", "trendRetryRate": "increasing"
+}
+```
+
+这是 Layer 4 → Layer 5 的唯一契约。LLM 不再读全量 Log，只读这份摘要。
+
+### 14.3 Layer 5：LLM Insights Engine
+
+**目标**：v6.md 第 11 节明确"GPT 只负责解释"。`InsightsEngine` 接收 `AnalyticsReport.llmPayload`，用 LLM 生成自然语言根因分析与建议。
+
+#### 14.3.1 框架选型：pi-ai
+
+LLM 调用统一走 `@earendil-works/pi-ai`（pi-mono 框架）。选用理由：
+
+- **多 provider 统一 API**：OpenAI / Anthropic / Google / Mistral / Bedrock 等 20+ provider 共用 `complete(model, context)` 接口。
+- **env 自动注入 API key**：compat 模块读取 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 等环境变量，无需手动传 key。
+- **未来可平滑迁移到 `createModels()`**：当前用 deprecated 的 compat 顶层 API 是过渡方案，等 coding-agent ModelManager 迁移完成后再切到新 API，业务代码只需改 import 路径。
+
+#### 14.3.2 实现
+
+`src/llm/InsightsEngine.ts` 核心流程：
+
+1. `ensureInitialized()`：lazy `import('@earendil-works/pi-ai/compat')`，调 `getModel(provider, id)` 解析模型。
+2. `generate(report)`：构造 `Context`（systemPrompt + 1 条 user message 携带 `llmPayload`），调 `complete(model, context)`。
+3. 从 `response.content` 提取 `text` block。
+4. **Fallback 判定**：若 `text` 为空 或 `usage.input === 0 && usage.output === 0`（典型无 API key 场景），回退到 `templateExplanation(report)`。
+5. 异常时同样回退 template，并附 `[LLM fallback: <err>]` 标注。
+
+**关键 workaround**：tsx 无法解析 `package.json` 的 `exports` 子路径（即使 `./compat` 在 exports map 中）。改用 **dynamic `import()`** 让 Node.js 原生 ESM loader 处理，绕过 tsx 的 resolver。静态 `import type` 只取类型，不触发运行时解析。
+
+#### 14.3.3 配置
+
+| 环境变量 | 默认值 | 说明 |
+|---------|--------|------|
+| `AEA_LLM_PROVIDER` | `openai` | pi-ai provider id |
+| `AEA_LLM_MODEL` | `gpt-4o-mini` | 模型 id（轻量优先） |
+| `OPENAI_API_KEY` | — | 由 compat 自动读取 |
+
+未配置 API key 时自动回退到 `templateExplanation`，按 v6.md 第 11 节示例格式输出中文结构化分析（健康度 / 主要失败 / Context ROI / 趋势 / 工作流 / 建议）。
+
+#### 14.3.4 Template Explanation
+
+`templateExplanation(report)` 按 v6.md 第 11 节示例输出：
+
+- 会话与事件总数
+- 健康度方向（improving / declining / stable）
+- 主要失败模式 + 典型失败路径
+- Context ROI 正/负向特征
+- 趋势（acceptRate / retryRate）
+- 最常见工作流
+- 针对性建议（按 `topFailure` 分支：retry_loop / context_explosion / wrong_context）
+
+### 14.4 端到端 Demo
+
+`npm run v6` 跑 `src/cli-v6.ts`，生成 3 天 × 8 session × 76 event 的合成数据，依次过 5 层：
+
+```
+─── Layer 1: Event Store ───            76 events, 8 sessions
+─── Layer 2: Feature Store ───          40 feature rows
+─── Layer 3: Embedding Store ───        8 session + 8 prompt vectors, cosine search
+─── Layer 4: ML / Analytics ───         Markov + Heuristic Miner + Trend + Failure + ROI
+─── Layer 5: LLM Insights ───           pi-ai (template fallback when no API key)
+```
+
+输出包含：行为特征样本、相似 session Top-5、Markov 转移表与异常分、工作流图与失败模式、趋势方向与斜率、失败分类标签、Context ROI 相关系数、`llmPayload` JSON、最终自然语言 insight。
+
+### 14.5 文件清单
+
+| 路径 | 职责 |
+|------|------|
+| `src/store/schema.ts` | `SCHEMA_VERSION=2`，新增 `embeddings` 表迁移 |
+| `src/embedding/types.ts` | `EmbeddingEntityType` / `EmbeddingRow` / `SimilarityResult` |
+| `src/embedding/EmbeddingStore.ts` | SQLite 向量存储 + cosine 检索 + `cosineSimilarity` / `normalize` |
+| `src/embedding/EmbeddingPipeline.ts` | Feature-based 10 维 session 向量 + 5 维 prompt 向量 |
+| `src/embedding/index.ts` | barrel export |
+| `src/ml/BehaviorModel.ts` | 一阶 Markov 链 + 异常分 + 典型工作流生成 |
+| `src/ml/WorkflowMiner.ts` | Heuristic Miner：directly-follows + dependency metric |
+| `src/ml/TrendAnalysis.ts` | 日级指标 + 线性回归 + 7 日滚动均值 + health direction |
+| `src/ml/AnalyticsEngine.ts` | 编排 ML 全家桶 + 失败分类 + Context ROI + `llmPayload` |
+| `src/llm/InsightsEngine.ts` | pi-ai 调用 + template fallback |
+| `src/llm/index.ts` | barrel export |
+| `src/cli-v6.ts` | `npm run v6` 端到端 demo |
+
+### 14.6 演进意义
+
+V6 全五层补齐后，AEA 真正成为 **AI Development Observatory**：
+
+- **统一底座**：Event Store 是唯一真相源，Feature / Embedding / ML / LLM 都是其上聚合。
+- **离线可重建**：Embedding 与 Feature 都可从 Event 重新计算，不是长期真相源。
+- **LLM 受控**：GPT 只解释几百 token 的结构化摘要，不读全量 Log，成本与延迟可控。
+- **可插拔**：失败分类当前是规则版，后续可换 CatBoost；Embedding 当前是 Feature-based，后续可并存语义向量；LLM 层当前用 compat，后续可切 `createModels()`。
+
+```text
+V1  Trace Collection
+  → V2  Offline Evaluation
+    → V2.5  Realtime Observability
+      → V3  ML Model
+        → V4  ML + Shadow + Feedback
+          → V5  Runtime Intelligence
+            → V5.2  Trustworthy Decision
+              → V6  Event Store + Feature Store
+                → V6 Full  Embedding + ML + LLM（五层闭环）
+```
+
+V6 全五层完成的本质，是把 V6 第 13 章落下的基础设施真正转化为可观测、可分析、可解释的闭环。Event → Feature → Embedding → ML → LLM 的单向数据流，使任何一层都可以独立替换或升级，而不影响其他层。

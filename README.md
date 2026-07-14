@@ -90,6 +90,32 @@ src/
   scripts/
     train_catboost.py   # Python training script
     predict_catboost.py # Python inference script
+  store/                # V6 SQLite-backed Event Store + Feature Store
+    types.ts            # IDEEvent + 5 feature domain interfaces
+    schema.ts           # SQLite migrations (events / feature_* / embeddings)
+    EventStore.ts       # event insert/query
+    FeatureStore.ts     # versioned feature read/write + training matrix
+    FeatureRegistry.ts  # central feature catalog
+    FeaturePipeline.ts  # 5 aggregators + 31 core feature definitions
+  embedding/            # V6 Layer 3: Embedding Store
+    EmbeddingStore.ts   # SQLite-backed vectors + cosine similarity search
+    EmbeddingPipeline.ts# feature-based session/prompt vectors (log-scale + L2 norm)
+  ml/                   # CatBoost + V6 Layer 4: Analytics Engine
+    features.ts         # feature extraction for ML
+    dataset.ts          # synthetic dataset generation + CSV export
+    CatBoostTrainer.ts  # train CatBoost via Python bridge
+    CatBoostModel.ts    # predict with trained .cbm model
+    CatBoostAdvisor.ts  # real-time recommendation from SessionState
+    BehaviorModel.ts    # first-order Markov chain over event sequences
+    WorkflowMiner.ts    # Heuristic Miner for process discovery
+    TrendAnalysis.ts    # linear-regression + 7-day rolling avg trend detection
+    AnalyticsEngine.ts  # orchestrates ML + produces llmPayload for LLM layer
+    shadow/             # shadow evaluation framework
+      ShadowRunner.ts
+    feedback/           # outcome → training data feedback loop
+      FeedbackCollector.ts
+  llm/                  # V6 Layer 5: LLM Insights Engine
+    InsightsEngine.ts   # pi-ai driven natural-language insights (template fallback)
   history/              # V1/V2 historical trace analysis
     collector.ts
     featureExtractor.ts
@@ -99,6 +125,8 @@ src/
   cli.ts                # real-time observability demo
   cli-train.ts          # CatBoost training demo
   cli-predict.ts        # CatBoost prediction demo
+  cli-store.ts          # V6 Event Store + Feature Store demo
+  cli-v6.ts             # V6 full 5-layer Observatory demo
 ```
 
 ## Quick start
@@ -115,6 +143,7 @@ npm run v4          # real-time recommendation + shadow evaluation + feedback
 npm run v5          # Agent Runtime Intelligence (state machine + event sourcing + plugins)
 npm run trust       # Trustworthy Decision Engine (calibration + fusion + explainability + evaluation)
 npm run store       # SQLite Event Store + Feature Store (event pipeline + behavior features)
+npm run v6          # Full 5-layer Observatory demo (Event + Feature + Embedding + ML + LLM)
 npm run typecheck   # verify types
 npm run build       # compile to dist/
 ```
@@ -142,6 +171,7 @@ npm run build       # compile to dist/
 | V4 | Real-time recommendation + shadow evaluation | Done |
 | V5 | Agent Runtime Intelligence (state machine + event sourcing + plugins) | Done |
 | V5.2 | Trustworthy Decision Engine (calibration + fusion + explainability + evaluation) | Done |
+| V6 | AI Development Observatory (Event + Feature + Embedding + ML + LLM) | Done |
 
 ## Design constraints
 

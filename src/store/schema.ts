@@ -2,7 +2,7 @@
 
 import Database from 'better-sqlite3';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export function openDatabase(path: string): Database.Database {
   const db = new Database(path);
@@ -78,6 +78,24 @@ function migrate(db: Database.Database): void {
       PRIMARY KEY (entity_id, domain, source)
     );
   `);
+
+  // --- Embedding Store (v6.md Section 4) ---
+  // Stores vector embeddings for sessions, prompts, workflows, errors.
+  // Vector is a JSON array of floats. Cosine similarity computed in TS.
+  if (current < 2) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS embeddings (
+        entity_id   TEXT    NOT NULL,
+        entity_type TEXT    NOT NULL,
+        model       TEXT    NOT NULL,
+        dim         INTEGER NOT NULL,
+        vector      TEXT    NOT NULL,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (entity_id, entity_type, model)
+      );
+      CREATE INDEX IF NOT EXISTS idx_embeddings_type ON embeddings(entity_type);
+    `);
+  }
 
   db.prepare('INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)').run('version', String(SCHEMA_VERSION));
 }
