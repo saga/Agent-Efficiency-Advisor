@@ -993,3 +993,253 @@ V1  Trace Collection        采集 Agent 运行轨迹，落盘 JSONL
 ```
 
 V5.2 的本质是把 V5 已有的"给出推荐"能力，升级为"给出**可信、可解释、可校准、可验证**的决策"。不再追求功能广度，而是把每一条决策都打磨到"有依据、可解释、可量化、可验证、可自我校准"的标准，使 Advisor 真正成为可被审计、可被信任的决策引擎。
+
+---
+
+## 13. V6 Event Store + Feature Store (SQLite)
+
+V6 不再横向扩张决策能力，而是向下夯实基础设施层。核心论断来自 `v6.md`：**CatBoost + Embedding 只能完成约 60% 的能力**，真正阻碍后续行为建模、工作流挖掘、失败分类、Context ROI、相似 Session 检索与趋势分析的是缺一个**统一事件模型**与一套可版本化的特征存储。V6 的第一步就是把 Event Store 与 Feature Store 落到 SQLite，作为后续所有分析能力的共同基础。
+
+### 13.1 设计理念
+
+基于 `v6.md` 的"AI Development Observatory"构想，V6 确立两条原则：
+
+1. **统一事件模型（Unified Event Model）是基础**。目前 Copilot、Cursor、Continue、Claude Code 各自的日志格式互不兼容，后续的 ML、Embedding、分析都受限。必须先把所有 Agent 源归一化为同一份 `IDEEvent`，再在其上做聚合。
+2. **真正需要长期保存的数据只有两类：Event 与 Feature**。
+   - **Event**：原始事实，不可变、可重放。
+   - **Feature**：由 Event 聚合而来，可版本化、可重算。
+   - **Embedding** 可以从 Event / Feature 重新计算，不必作为长期真相源。
+   - **CatBoost** 可以从 Feature + Label 重新训练，模型文件只是派生产物。
+   - **GPT** 输出的是解释，根本不需要保存。
+
+存储选型上，**SQLite 足够个人 / 开源项目规模**：单文件、零运维、事务安全、WAL 模式下并发读良好；未来数据量增长到几十 GB 时，可平滑迁移到 DuckDB，SQL 接口几乎不变。无需引入 Redis / Elastic / ClickHouse / Feast 这类重型基础设施。
+
+### 13.2 五层架构图
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Sources                                                                  │
+│   Copilot  /  Cursor  /  Git  /  MCP  /  Terminal  /  Editor              │
+└──────────────────────────────────┬───────────────────────────────────────┘
+                                   │  归一化为 IDEEvent
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Event Collector                                                          │
+│   各源 Parser → 统一 IDEEvent 流                                           │
+└──────────────────────────────────┬───────────────────────────────────────┘
+                                   │  批量插入 (transaction)
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Event Store (SQLite)                                                     │
+│   events(id, timestamp, session_id, workspace_id, event_type, metadata)  │
+└──────────────────────────────────┬───────────────────────────────────────┘
+                                   │  bySession / byWorkspace / getSessionIds
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Feature Pipeline (Aggregators)                                           │
+│   Workspace / Session / Prompt / Tool / Behavior                          │
+└──────────────────────────────────┬───────────────────────────────────────┘
+                                   │  versioned write
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Feature Store (SQLite) — 5 domain tables                                 │
+│   feature_workspace  feature_session  feature_prompt                      │
+│   feature_tool       feature_behavior                                     │
+│   + feature_registry + labels                                             │
+└──────────────┬───────────────────────────┬────────────────────────────────┘
+               │                           │
+               ▼                           ▼
+   ┌────────────────────┐     ┌────────────────────────┐
+   │  CatBoost 训练/推理  │     │  Dashboard / GPT 解释  │
+   │  (getTrainingMatrix)│     │  (查 FeatureRegistry)  │
+   └────────────────────┘     └────────────────────────┘
+```
+
+### 13.3 统一事件模型 IDEEvent
+
+所有 Agent 源（Copilot / Cursor / Git / MCP / Terminal / Editor）最终都归一化为同一份 `IDEEvent`。定义见 `src/store/types.ts`：
+
+```ts
+export type IDEEventType =
+  | 'open_file' | 'read_file' | 'edit' | 'completion' | 'accept' | 'reject'
+  | 'retry' | 'tool_call' | 'terminal' | 'chat' | 'run_test' | 'commit'
+  | 'session_start' | 'session_end' | 'error';   // 共 15 种
+
+export interface IDEEvent {
+  id?: number;
+  timestamp: number;
+  sessionId: string;
+  workspaceId: string;
+  eventType: IDEEventType;
+  metadata: Record<string, unknown>;
+}
+```
+
+- `eventType` 收敛为 15 种，覆盖文件操作、补全交互、工具调用、终端、测试、提交、会话生命周期与错误。
+- `metadata` 是自由 JSON，承载各源特有的细节（路径、语言、token、diff、tool 名等），归一化层负责把源格式塞进去。
+- 后续所有能力（Feature、Embedding、Graph、Mining）都是 `IDEEvent` 的不同聚合，不再各自重新解析原始日志。
+
+### 13.4 Event Store (SQLite)
+
+表结构（见 `src/store/schema.ts` 的 `migrate`）：
+
+```sql
+CREATE TABLE events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp    INTEGER NOT NULL,
+  session_id   TEXT    NOT NULL,
+  workspace_id TEXT    NOT NULL,
+  event_type   TEXT    NOT NULL,
+  metadata     TEXT    NOT NULL DEFAULT '{}'   -- JSON
+);
+```
+
+索引覆盖四种典型查询路径：
+
+| 索引 | 用途 |
+|------|------|
+| `idx_events_session` | 按 session 回放事件流 |
+| `idx_events_type` | 按事件类型聚合（如统计所有 retry） |
+| `idx_events_time` | 时间窗口扫描 / 趋势分析 |
+| `idx_events_workspace` | 跨 session 的 workspace 级分析 |
+
+`EventStore`（`src/store/EventStore.ts`）提供：
+
+- `insert(event)`：单条插入，返回自增 id。
+- `insertBatch(events)`：**事务批量插入**，避免逐条提交的开销。
+- `getBySession(sessionId)`：按 session 取全部事件并按时间排序，供 Feature Pipeline 聚合。
+- `getByType(eventType, limit)`：按事件类型查询。
+- `getByWorkspace(workspaceId, from?, to?)`：按 workspace 查询，支持时间区间。
+- `getSessionIds(workspaceId?)`：枚举（某 workspace 下的）所有 session。
+- `count()`：事件总数，便于快速校验。
+
+### 13.5 Feature Store (SQLite)
+
+每个 domain 一张表，共 5 张：`feature_workspace` / `feature_session` / `feature_prompt` / `feature_tool` / `feature_behavior`。统一表结构：
+
+```sql
+CREATE TABLE feature_<domain> (
+  entity_id    TEXT    NOT NULL,
+  version      INTEGER NOT NULL,
+  computed_at  INTEGER NOT NULL,
+  features     TEXT    NOT NULL,         -- JSON blob
+  PRIMARY KEY (entity_id, version)
+);
+```
+
+设计要点：
+
+- **主键 `(entity_id, version)` —— 版本化、不可覆盖**。同一实体可以同时存在 v1 / v2 多版本特征，老模型训练用的 v1 数据不会被新算法覆盖而作废。
+- **`features` 字段存 JSON**。无需为每个新特征改 schema，新增特征只需在 `FeatureDefinition` 注册并在 Aggregator 里产出。
+- **`labels` 表用于 ML 训练标签**：
+
+  ```sql
+  CREATE TABLE labels (
+    entity_id TEXT, domain TEXT, label TEXT, source TEXT, created_at INTEGER,
+    PRIMARY KEY (entity_id, domain, source)
+  );
+  ```
+
+- **`getTrainingMatrix(domain, version, labelSource)` 自动 join features + labels**：先 `readAll(domain, version)` 取该版本全部特征，再用 `labels` 表过滤出有标签的样本，输出 `{ features, label, entityId }[]`，可直接喂给 CatBoost。
+
+`FeatureStore`（`src/store/FeatureStore.ts`）提供：`write` / `writeBatch` / `read`（取最新或指定版本）/ `readAll`（取全部或指定版本）/ `getTrainingMatrix` / `writeLabel` / `latestVersion`。
+
+### 13.6 Feature Registry
+
+`feature_registry` 表统一管理所有 `FeatureDefinition`：
+
+```sql
+CREATE TABLE feature_registry (
+  name        TEXT PRIMARY KEY,
+  domain      TEXT NOT NULL,
+  description TEXT NOT NULL,
+  version     INTEGER NOT NULL,
+  owner       TEXT NOT NULL
+);
+```
+
+`FeatureRegistry`（`src/store/FeatureRegistry.ts`）提供 `register` / `registerBatch` / `getAll` / `getByDomain`。**Dashboard、CatBoost、GPT 三个消费方都查 Registry**，而不是各自硬编码特征名：Dashboard 据此渲染特征列表，CatBoost 据此对齐特征列序，GPT 据此知道每个数值的含义。新增特征只需在 Registry 注册一次，三个消费方同步可见。
+
+### 13.7 Feature Pipeline (5 个 Aggregator)
+
+`FeaturePipeline`（`src/store/FeaturePipeline.ts`）在 session 结束或周期性触发时，从 EventStore 取出 `IDEEvent[]`，分别聚合为 5 个 domain 的特征并版本化写入 FeatureStore。Aggregator 与对应特征如下：
+
+| Aggregator | 关键特征 |
+|------------|---------|
+| **WorkspaceFeature** | `totalFiles` / `totalLOC` / `languageCount` / `dependencyCount` / `gitBranchCount` / `workspaceComplexity`（`0.4*log(fileCount)+0.3*lang+0.3*deps`） |
+| **SessionFeature** | `duration` / `completionCount` / `retryCount` / `acceptCount` / `rejectCount` / `acceptRate`（`accept/(accept+reject)`）/ `retryRate`（`retry/completion`） |
+| **PromptFeature** | `tokenCount` / `historyLength` / `retrievedFiles` / `retrievedSymbols` / `promptDensity`（`promptToken/contextToken`）/ `historyRatio`（`historyToken/promptToken`） |
+| **ToolFeature** | `terminalCalls` / `gitCalls` / `mcpCalls` / `filesystemCalls` |
+| **BehaviorFeature（核心创新）** | `avgReadBeforeAsk` / `avgRetryDistance` / `toolSwitchFrequency` / `contextExpansionSpeed` / `workflowEntropy` / `retryBurstScore` / `editAfterAcceptRatio` / `workflowLength` |
+
+`CORE_FEATURE_DEFINITIONS` 共注册 **31 个特征定义**（6 + 7 + 6 + 4 + 8 = 31），在 `FeaturePipeline.initializeRegistry()` 时一次性写入 Registry。
+
+### 13.8 Behavior Feature 详解 —— 为什么这是创新点
+
+绝大多数 Copilot Analytics 项目停留在**事件统计层**（retryCount、acceptRate、latency 这类 Aggregation Feature）。V6 的核心创新是引入 **BehaviorFeature**：它描述的是**开发行为的动态模式**，而非事件计数。统计量回答"发生了多少次"，行为特征回答"过程长什么样"。
+
+| Feature | 含义 |
+|---------|------|
+| `avgReadBeforeAsk` | 每次提问前平均读几个文件 —— 反映提问前的上下文准备 |
+| `avgRetryDistance` | 相邻 retry 之间平均间隔多少事件 —— 反映重试是零星还是密集 |
+| `toolSwitchFrequency` | 相邻事件类型切换频率 —— 反映工作流是否频繁跳转 |
+| `contextExpansionSpeed` | 每个事件平均带来多少 token —— 反映上下文膨胀速度 |
+| `workflowEntropy` | 事件类型分布的香农熵（归一化到 0..1）—— 反映工作流是否混乱 |
+| `retryBurstScore` | 最长连续 retry / 总 retry —— 反映是否出现 retry 爆发 |
+| `editAfterAcceptRatio` | accept 后立即 edit 的比例 —— 反映 AI 建议被接受后被立刻修改的程度 |
+| `workflowLength` | session 总事件数 —— 反映工作流长度 |
+
+以 `cli-store.ts` 中的三个合成 session 为例，三者事件计数可能相近，但行为特征差异显著：
+
+- **sess-good（smooth workflow）**：`read → ask → accept → run → commit`，`workflowEntropy` 低、`retryBurstScore` 为 0、`toolSwitchFrequency` 平稳、`editAfterAcceptRatio` 低。一个流畅、可预测的会话。
+- **sess-retry-storm（retry storm）**：反复 `retry`，`avgRetryDistance` 极小、`retryBurstScore` 接近 1、`workflowEntropy` 偏低（事件类型高度集中在 retry）。一个卡在某一步、反复撞墙的会话。
+- **sess-context-explosion（context explosion）**：大量 `read_file` 与 `chat`，`contextExpansionSpeed` 高、`avgReadBeforeAsk` 高、`workflowEntropy` 偏高（事件类型分散）。一个上下文不断膨胀、提问准备过度的会话。
+
+这三类 session 用传统计数特征难以区分，但用 BehaviorFeature 可以被清晰分离。这些特征是后续 CatBoost 失败分类、Embedding 聚类、Session 相似性、GPT 根因分析都可以共享的高价值输入。
+
+### 13.9 特征版本化
+
+特征算法会演进（如 `workspaceComplexity` 从 v1 的 `0.4*log+0.3*lang+0.3*deps` 升级为 v2 的更复杂公式）。若直接覆盖旧特征，所有用旧特征训练的模型会立即作废。V6 的做法：
+
+- Feature 表主键含 `version`，**同一 entity 可并存多版本**，写入不覆盖。
+- `FeatureDefinition` 自带 `version` 字段，Registry 里同名特征可以有多版本定义。
+- `FeatureStore.read(domain, entityId, version?)` 可显式取指定版本，缺省取最新。
+- `getTrainingMatrix(domain, version, labelSource)` 强制指定版本，保证一次训练内所有样本特征口径一致。
+
+这样算法升级后，新版本特征与旧版本特征共存，老模型继续用老版本训练，新模型用新版本训练，过渡期可对比两版效果，避免一刀切作废全部历史训练数据。
+
+### 13.10 关键文件表
+
+| 路径 | 职责 |
+|------|------|
+| `src/store/types.ts` | `IDEEvent` / `IDEEventType`（15 种）/ `FeatureDefinition` / `FeatureRow` / 5 个 Feature 接口（`WorkspaceFeature` / `SessionFeature` / `PromptFeature` / `ToolFeature` / `BehaviorFeature`） |
+| `src/store/schema.ts` | `openDatabase`（WAL + foreign_keys）+ `migrate`（建 `events` / `feature_*` / `feature_registry` / `labels` / `schema_meta` 表与索引） |
+| `src/store/EventStore.ts` | `insert` / `insertBatch`（事务）/ `getBySession` / `getByType` / `getByWorkspace` / `getSessionIds` / `count` |
+| `src/store/FeatureRegistry.ts` | `register` / `registerBatch` / `getAll` / `getByDomain` |
+| `src/store/FeatureStore.ts` | `write` / `writeBatch` / `read` / `readAll` / `getTrainingMatrix`（join labels）/ `writeLabel` / `latestVersion` |
+| `src/store/FeaturePipeline.ts` | 5 个 Aggregator（`computeWorkspaceFeatures` / `computeSessionFeatures` / `computePromptFeatures` / `computeToolFeatures` / `computeBehaviorFeatures`）+ `CORE_FEATURE_DEFINITIONS`（31 个定义）+ `computeSession` / `computeAllSessions` |
+| `src/cli-store.ts` | `npm run store` 端到端 demo：合成事件流 → 落 SQLite → 跑 Feature Pipeline → 查特征 → 物化训练矩阵 |
+
+### 13.11 演进意义
+
+V6 的定位是从 V5.2 的"**可信决策**"进一步下沉为"**AI Development Observatory**"的基础设施层。Event Store + Feature Store 不是又一个决策模块，而是后续所有分析能力的共同底座：
+
+- **Embedding Store**：从 Event / Feature 生成 Session / Prompt / Workflow 向量，做相似 Session 检索。
+- **Session Graph**：把 Session ↔ Prompt ↔ Workspace ↔ GitCommit ↔ Completion 之间的关係建模为时序属性图，许多分析可直接转化为图查询。
+- **Workflow Mining**：直接吃 Event Log，用 Alpha / Heuristic / Inductive Miner 自动恢复真实工作流。
+- **Context ROI**：用 CatBoost + SHAP 量化每类 Context（README / Git / History / Neighbor / Search）对 accept 的贡献，自动剔除低价值上下文。
+- **趋势分析**：基于 Feature Store 的时间序列做 Accept Rate / Retry Rate 漂移检测（CatBoost 不擅长时序，需 Prophet / XGBoost / TFT）。
+- **GPT 解释**：GPT 不再被浪费去读全量 Log，而是只读 Feature Store 产出的几百 token 摘要，输出自然语言根因分析与日报。
+
+```text
+V1  Trace Collection
+  → V2  Offline Evaluation
+    → V2.5  Realtime Observability
+      → V3  ML Model
+        → V4  ML + Shadow + Feedback
+          → V5  Runtime Intelligence
+            → V5.2  Trustworthy Decision
+              → V6  Event Store + Feature Store（统一事件模型 + 版本化特征基础设施）
+```
+
+V6 的本质变化是把"决策能力"暂时放下，先把**统一事件模型**与**可版本化的特征存储**这两块基础设施落到 SQLite。从此 Embedding、CatBoost、GPT、Workflow Mining、Session Graph、Context ROI、趋势分析都不再各自重新解析日志，而是建立在同一份 Event 与 Feature 之上，使平台真正具备"AI Development Observatory"的底座。

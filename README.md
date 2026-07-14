@@ -114,6 +114,7 @@ npm run predict     # predict with trained model (uses .venv)
 npm run v4          # real-time recommendation + shadow evaluation + feedback
 npm run v5          # Agent Runtime Intelligence (state machine + event sourcing + plugins)
 npm run trust       # Trustworthy Decision Engine (calibration + fusion + explainability + evaluation)
+npm run store       # SQLite Event Store + Feature Store (event pipeline + behavior features)
 npm run typecheck   # verify types
 npm run build       # compile to dist/
 ```
