@@ -14,6 +14,8 @@
     "v6": "tsx src/cli-v6.ts",
     "train": "tsx src/cli-train.ts",
     "predict": "tsx src/cli-predict.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
@@ -21,7 +23,8 @@
     "@types/node": "^26.1.1",
     "@types/node-notifier": "^8.0.5",
     "tsx": "^4.19.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.7",

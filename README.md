@@ -149,6 +149,8 @@ npm run v5          # Agent Runtime Intelligence (state machine + event sourcing
 npm run trust       # Trustworthy Decision Engine (calibration + fusion + explainability + evaluation)
 npm run store       # SQLite Event Store + Feature Store (event pipeline + behavior features)
 npm run v6          # Full 6-layer Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
+npm run demo        # Realtime V2.5 dashboard + V6Sink bridge (writes to SQLite in real-time)
+npm run test        # run vitest test suite (45 tests across 6 files)
 npm run typecheck   # verify types
 npm run build       # compile to dist/
 ```
