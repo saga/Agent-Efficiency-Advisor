@@ -116,6 +116,11 @@ src/
       FeedbackCollector.ts
   llm/                  # V6 Layer 5: LLM Insights Engine
     InsightsEngine.ts   # pi-ai driven natural-language insights (template fallback)
+  graph/                # V6 Layer 6: Session Graph (Temporal Property Graph)
+    types.ts            # GraphNodeType / GraphEdgeType / GraphNode / GraphEdge
+    GraphStore.ts       # SQLite node/edge storage + neighbor traversal
+    GraphBuilder.ts     # build graph from EventStore + FeatureStore
+    GraphQueries.ts     # 4 canonical queries (retry-recovery, workspace failure, tool impact, failure clusters)
   history/              # V1/V2 historical trace analysis
     collector.ts
     featureExtractor.ts
@@ -143,7 +148,7 @@ npm run v4          # real-time recommendation + shadow evaluation + feedback
 npm run v5          # Agent Runtime Intelligence (state machine + event sourcing + plugins)
 npm run trust       # Trustworthy Decision Engine (calibration + fusion + explainability + evaluation)
 npm run store       # SQLite Event Store + Feature Store (event pipeline + behavior features)
-npm run v6          # Full 5-layer Observatory demo (Event + Feature + Embedding + ML + LLM)
+npm run v6          # Full 6-layer Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
 npm run typecheck   # verify types
 npm run build       # compile to dist/
 ```
@@ -171,7 +176,7 @@ npm run build       # compile to dist/
 | V4 | Real-time recommendation + shadow evaluation | Done |
 | V5 | Agent Runtime Intelligence (state machine + event sourcing + plugins) | Done |
 | V5.2 | Trustworthy Decision Engine (calibration + fusion + explainability + evaluation) | Done |
-| V6 | AI Development Observatory (Event + Feature + Embedding + ML + LLM) | Done |
+| V6 | AI Development Observatory (Event + Feature + Embedding + ML + LLM + Session Graph) | Done |
 
 ## Design constraints
 

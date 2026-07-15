@@ -2,7 +2,7 @@
 
 import Database from 'better-sqlite3';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export function openDatabase(path: string): Database.Database {
   const db = new Database(path);
@@ -94,6 +94,38 @@ function migrate(db: Database.Database): void {
         PRIMARY KEY (entity_id, entity_type, model)
       );
       CREATE INDEX IF NOT EXISTS idx_embeddings_type ON embeddings(entity_type);
+    `);
+  }
+
+  // --- Session Graph (v6.md Section 12: Temporal Property Graph) ---
+  // Nodes: session / prompt / workspace / commit / completion / accept|reject|retry /
+  //        file / language / dependency / tool
+  // Edges: typed relationships with timestamp + properties JSON
+  if (current < 3) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS graph_nodes (
+        id          TEXT    NOT NULL PRIMARY KEY,
+        type        TEXT    NOT NULL,
+        entity_id   TEXT    NOT NULL,
+        properties  TEXT    NOT NULL DEFAULT '{}',
+        created_at  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_graph_nodes_type   ON graph_nodes(type);
+      CREATE INDEX IF NOT EXISTS idx_graph_nodes_entity ON graph_nodes(entity_id);
+
+      CREATE TABLE IF NOT EXISTS graph_edges (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id   TEXT    NOT NULL,
+        target_id   TEXT    NOT NULL,
+        type        TEXT    NOT NULL,
+        properties  TEXT    NOT NULL DEFAULT '{}',
+        timestamp   INTEGER NOT NULL,
+        FOREIGN KEY (source_id) REFERENCES graph_nodes(id),
+        FOREIGN KEY (target_id) REFERENCES graph_nodes(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges(source_id);
+      CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target_id);
+      CREATE INDEX IF NOT EXISTS idx_graph_edges_type   ON graph_edges(type);
     `);
   }
 

@@ -1490,3 +1490,246 @@ V1  Trace Collection
 ```
 
 V6 全五层完成的本质，是把 V6 第 13 章落下的基础设施真正转化为可观测、可分析、可解释的闭环。Event → Feature → Embedding → ML → LLM 的单向数据流，使任何一层都可以独立替换或升级，而不影响其他层。
+
+---
+
+## 15. V6 Session Graph（时序属性图）
+
+V6 第 14 章完成五层闭环后，v6.md 第 12 节提出"还缺一层"——**Session Graph**。这一层不引入新的数据源，而是把 Event / Feature / Embedding 已有的实体与关系建模为**时序属性图（Temporal Property Graph）**，使许多原本需要扫描全量日志的分析直接转化为图查询。
+
+### 15.1 动机
+
+第 13、14 章的 Feature Store 擅长"统计型"分析（每个 session 的 acceptRate、retryBurstScore 等），但不擅长"关系型"分析：
+
+- "找出所有最终成功但经历三次以上 Retry 的 Session"——需要追踪 session→completion→outcome 的链路。
+- "分析某类 Workspace 是否更容易触发 Context Explosion"——需要聚合 workspace→session→failure 的多跳关系。
+- "统计某个 Tool 对 Accept Rate 的长期影响"——需要 tool→session→feature 的跨域关联。
+- "发现某类失败是否集中发生在特定语言、依赖版本或工作流阶段"——需要 failure→session→workspace→language 的多维聚类。
+
+这些问题用 SQL JOIN 写出来又长又难维护，用图遍历表达则一目了然。
+
+### 15.2 数据模型
+
+#### 15.2.1 节点类型
+
+| 类型 | entityId | 关键属性 | 来源 |
+|------|----------|---------|------|
+| `session` | sessionId | startTime / endTime / acceptRate / retryRate | EventStore + FeatureStore |
+| `prompt` | promptId | tokenCount / retrievedFiles / contextToken / historyToken | `chat` 事件 |
+| `workspace` | workspaceId | （属性从 FeatureStore 补充） | EventStore |
+| `commit` | `commit:${sessionId}:${eventId}` | branch / author | `commit` 事件 |
+| `completion` | `completion:${sessionId}:${eventId}` | tokenCount | `completion` 事件 |
+| `accept` / `reject` / `retry` | `${type}:${sessionId}:${eventId}` | — | 对应事件 |
+| `file` | path | path | `read_file` 事件 |
+| `language` | language name | name | `session_start` metadata.languages |
+| `dependency` | dependency name | name | `session_start` metadata.dependencies |
+| `tool` | `${toolName}@${sessionId}` | name / sessionId | `run_test` / `terminal` / `tool_call` 事件 |
+
+节点 id 为 `${type}:${entityId}`，upsert 语义保证同一实体只存一份。
+
+#### 15.2.2 边类型
+
+| 边类型 | 方向 | 语义 |
+|--------|------|------|
+| `session_workspace` | session → workspace | 该 session 运行在此 workspace |
+| `session_prompt` | session → prompt | 该 session 发出此 prompt |
+| `session_completion` | session → completion | 该 session 产生此 completion |
+| `session_commit` | session → commit | 该 session 产生此 commit |
+| `session_file` | session → file | 该 session 读取过此文件 |
+| `session_tool` | session → tool | 该 session 使用过此工具（按 session 去重） |
+| `completion_outcome` | completion → accept\|reject\|retry | 该 completion 的最终结果 |
+| `prompt_file` | prompt → file | 该 prompt 之前读取的文件作为上下文 |
+| `workspace_language` | workspace → language | workspace 包含此语言（去重，非每 session 重复） |
+| `workspace_dependency` | workspace → dependency | workspace 依赖此包（去重） |
+
+边带 `timestamp` 与 `properties` JSON，支持时序查询。
+
+#### 15.2.3 Schema
+
+`schema.ts` 在 `SCHEMA_VERSION < 3` 时建图表：
+
+```sql
+CREATE TABLE graph_nodes (
+  id          TEXT PRIMARY KEY,
+  type        TEXT NOT NULL,
+  entity_id   TEXT NOT NULL,
+  properties  TEXT NOT NULL DEFAULT '{}',
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX idx_graph_nodes_type   ON graph_nodes(type);
+CREATE INDEX idx_graph_nodes_entity ON graph_nodes(entity_id);
+
+CREATE TABLE graph_edges (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id   TEXT NOT NULL,
+  target_id   TEXT NOT NULL,
+  type        TEXT NOT NULL,
+  properties  TEXT NOT NULL DEFAULT '{}',
+  timestamp   INTEGER NOT NULL,
+  FOREIGN KEY (source_id) REFERENCES graph_nodes(id),
+  FOREIGN KEY (target_id) REFERENCES graph_nodes(id)
+);
+CREATE INDEX idx_graph_edges_source ON graph_edges(source_id);
+CREATE INDEX idx_graph_edges_target ON graph_edges(target_id);
+CREATE INDEX idx_graph_edges_type   ON graph_edges(type);
+```
+
+图与 Event / Feature / Embedding 共享同一个 SQLite 文件，事务一致性好，备份与迁移成本为零。
+
+### 15.3 GraphStore
+
+`src/graph/GraphStore.ts` 提供节点/边 CRUD 与邻居遍历：
+
+| 方法 | 作用 |
+|------|------|
+| `clear()` | 清空图（重建前调用） |
+| `upsertNode(node)` / `upsertNodeBatch(nodes)` | 节点 upsert（按 id） |
+| `insertEdge(edge)` / `insertEdgeBatch(edges)` | 边 append |
+| `getNode(id)` / `getNodesByType(type)` | 节点查询 |
+| `getEdgesByType(type)` / `getEdgesFrom(sid)` / `getEdgesTo(tid)` | 边查询 |
+| `getNeighbors(sourceId, edgeType?)` | 一跳正向邻居（节点） |
+| `getReverseNeighbors(targetId, edgeType?)` | 一跳反向邻居（节点） |
+| `count()` / `stats()` | 计数与按类型分组统计 |
+
+邻居遍历通过 `graph_nodes ⋈ graph_edges` 的 JOIN 实现，索引覆盖 source / target / type 三列，单跳查询在千节点规模下亚毫秒。
+
+### 15.4 GraphBuilder
+
+`src/graph/GraphBuilder.ts` 从 EventStore + FeatureStore 重建图。流程：
+
+1. `clear()` + 清空内部 `edgesAdded` 去重集合。
+2. 对每个 sessionId：
+   - 建 session 节点（携带 acceptRate / retryRate 快照）
+   - 建 workspace 节点 + `session_workspace` 边
+   - 从 `session_start` metadata 提取 `languages` / `dependencies`，建 language / dependency 节点 + `workspace_language` / `workspace_dependency` 边（**去重**：同一 workspace 的语言/依赖只建一次边）
+   - 遍历事件，按 eventType 建 prompt / completion / accept / reject / retry / file / commit / tool 节点及对应边
+   - `read_file` 事件中读的文件缓冲到 `filesBufferedForPrompt`，下一个 `chat` 事件到达时一次性建 `prompt_file` 边（捕获"该 prompt 的上下文文件"语义）
+   - `run_test` / `terminal` / `tool_call` 按 `${toolName}@${sessionId}` 去重，避免同一 session 内多次调用同一工具产生重复边
+
+**关键去重**：`addEdge` 用 `Set<string>` 跟踪 `${source}|${target}|${type}`，防止 `workspace_language` 这类固有关系被每个 session 重复插入。修复前 demo 中 `workspace_language` 边数 = sessions × languages（24），修复后 = unique workspaces × languages（3），查询计数才正确。
+
+### 15.5 GraphQueries — v6.md 第 12 节的四个典型问题
+
+`src/graph/GraphQueries.ts` 把第 12 节列出的四个分析问题实现为图遍历 + FeatureStore 查找的混合查询。
+
+#### 15.5.1 Query 1：成功但经历多次 Retry 的 Session
+
+```ts
+findSessionsSucceededAfterRetries(minRetries = 3): SessionsWithRetriesResult[]
+```
+
+遍历所有 session 节点 → 取 `session_completion` 邻居 → 对每个 completion 取 `completion_outcome` 邻居 → 统计 retry / accept / reject 计数 → 过滤 `retryCount >= minRetries && acceptCount > 0`。
+
+返回：sessionId / retryCount / acceptCount / rejectCount / succeeded。
+
+#### 15.5.2 Query 2：Workspace 失败相关性
+
+```ts
+workspaceFailureAnalysis(failures: FailureClassification[]): WorkspaceFailureResult[]
+```
+
+对每个 workspace 节点 → 反向 `session_workspace` 邻居得到所有 session → 用传入的 `failures` 数组按 sessionId 查失败类型 → 聚合为 `{ workspaceId, totalSessions, failureBreakdown }`。
+
+回答"大型 TS Monorepo 是否更易触发 Context Explosion"这类问题。
+
+#### 15.5.3 Query 3：Tool 对 Accept Rate 的长期影响
+
+```ts
+toolAcceptRateImpact(): ToolImpactResult[]
+```
+
+对所有 tool 节点按 `properties.name` 分组 → 反向 `session_tool` 邻居得到 sessions → 查 FeatureStore 取每个 session 的 acceptRate / retryRate → 求均值。
+
+返回：toolName / sessionCount / avgAcceptRate / avgRetryRate。
+
+#### 15.5.4 Query 4：失败聚类分析
+
+```ts
+failureClusterAnalysis(failures: FailureClassification[]): FailureClusterResult[]
+```
+
+按 failureType 分组 sessions → 对每个 session：
+- `session_workspace` → workspace → `workspace_language` → 收集语言
+- `session_workspace` → 收集 workspace
+- `session_file` → 收集文件
+
+聚合并按频次排序，返回：failureType / sessionCount / commonLanguages / commonWorkspaces / commonFiles。
+
+回答"某类失败是否集中在特定语言 / 文件 / workspace"。
+
+### 15.6 端到端 Demo
+
+`npm run v6` 在 Layer 6 输出：
+
+```
+─── Layer 6: Session Graph (Temporal Property Graph) ───
+  Built 89 nodes / 115 edges from 11 sessions
+  Nodes by type:  retry=22, completion=11, prompt=11, session=11, file=7,
+                  accept=6, commit=6, reject=5, dependency=3, language=3, tool=3, workspace=1
+  Edges by type:  completion_outcome=33, prompt_file=17, session_file=17,
+                  session_completion=11, session_prompt=11, session_workspace=11,
+                  session_commit=6, session_tool=3, workspace_dependency=3, workspace_language=3
+
+  [Query 1] Sessions that succeeded after 3+ retries
+    sess-recover             retries=3 accepts=1 rejects=0
+    sess-recover-d1          retries=3 accepts=1 rejects=0
+    sess-recover-d2          retries=3 accepts=1 rejects=0
+
+  [Query 2] Workspace failure correlation
+    ws-demo              sessions=11  failures: retry_loop=8
+
+  [Query 3] Tool long-term impact on Accept Rate
+    vitest           sessions=3  avgAcceptRate=1  avgRetryRate=0
+
+  [Query 4] Failure cluster analysis
+    [retry_loop] affects 8 sessions
+      languages: TypeScript(8), JSON(8), Markdown(8)
+      workspaces: ws-demo(8)
+      files: src/graph/GraphBuilder.ts(3), README.md(2), package.json(2), ...
+```
+
+Query 1 找到 3 个 recover session（3 次重试后成功）；Query 3 显示用 vitest 的 session 全部成功（avgAcceptRate=1）；Query 4 揭示 retry_loop 在 ws-demo 集中，且 `src/graph/GraphBuilder.ts` 是最常关联的文件。
+
+### 15.7 文件清单
+
+| 路径 | 职责 |
+|------|------|
+| `src/store/schema.ts` | `SCHEMA_VERSION=3`，新增 `graph_nodes` / `graph_edges` 表与索引 |
+| `src/graph/types.ts` | `GraphNodeType`（12 种）/ `GraphEdgeType`（10 种）/ `GraphNode` / `GraphEdge` / `GraphStats` |
+| `src/graph/GraphStore.ts` | SQLite 节点/边存储 + `getNeighbors` / `getReverseNeighbors` 图遍历 |
+| `src/graph/GraphBuilder.ts` | 从 EventStore + FeatureStore 重建图 + 边去重 |
+| `src/graph/GraphQueries.ts` | 4 个典型查询：retry-recovery / workspace failure / tool impact / failure clusters |
+| `src/graph/index.ts` | barrel export |
+| `src/cli-v6.ts` | `npm run v6` 新增 Layer 6 demo（含 recover session 类型用于 Query 1 验证） |
+
+### 15.8 设计取舍
+
+- **为何纯 SQLite 而不用 Neo4j / Apache AGE**：节点规模 < 10k、边规模 < 100k，单跳查询用 JOIN + 索引足够快。引入图数据库会显著增加部署复杂度，与 V6"轻量基础设施"理念相悖。后续若需要多跳路径查询（如 3 跳因果链），可考虑迁移或用递归 CTE。
+- **为何图与 Event / Feature 共享同一 SQLite 文件**：事务一致性、备份简化、迁移零成本。图是 Event / Feature 的派生视图，可随时 `GraphBuilder.build()` 重建。
+- **为何把 languages / dependencies 放在 session_start metadata 而非独立扫描**：避免引入 workspace 扫描器。session_start 事件天然携带 workspace 快照，足够支撑大多数分析。未来需要精确的 workspace 索引时，可加一个 `WorkspaceScanner` 异步填充。
+- **为何失败分类作为 GraphQueries 的入参而非内部计算**：保持关注点分离。`AnalyticsEngine` 负责分类，`GraphQueries` 负责图遍历。这样失败分类算法升级（如换 CatBoost）不需要改 GraphQueries。
+
+### 15.9 演进意义
+
+Session Graph 补齐后，V6 真正成为 v6.md 第 12 节设想的"AI Development Observatory"：
+
+```text
+V1  Trace Collection
+  → V2  Offline Evaluation
+    → V2.5  Realtime Observability
+      → V3  ML Model
+        → V4  ML + Shadow + Feedback
+          → V5  Runtime Intelligence
+            → V5.2  Trustworthy Decision
+              → V6  Event Store + Feature Store
+                → V6 Full  Embedding + ML + LLM
+                  → V6 Graph  Session Graph（时序属性图，关系型分析的统一入口）
+```
+
+- **统计型分析**走 Feature Store（acceptRate、retryBurstScore 等）。
+- **语义型分析**走 Embedding Store（相似 session 召回）。
+- **序列型分析**走 ML（Markov、WorkflowMiner、Trend）。
+- **关系型分析**走 Session Graph（多跳关联、聚类、影响传播）。
+- **解释型分析**走 LLM（pi-ai 把上述输出转自然语言）。
+
+五种分析视角共享同一份 Event 真相源，互不重叠、互相补充。任何一层都可独立替换或升级。
