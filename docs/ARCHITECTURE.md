@@ -1733,3 +1733,101 @@ V1  Trace Collection
 - **解释型分析**走 LLM（pi-ai 把上述输出转自然语言）。
 
 五种分析视角共享同一份 Event 真相源，互不重叠、互相补充。任何一层都可独立替换或升级。
+
+---
+
+## 16. V6Sink — Realtime → V6 桥接
+
+### 16.1 问题
+
+V6 六层基础设施（Event Store / Feature Store / Embedding / ML / LLM / Graph）完成后，仍缺一个关键环节：**实时事件流没有写入 V6 SQLite**。V2.5 的 `cli.ts` 用 `MockLogSource` 产生 `AgentLogEvent`，经 `SessionManager` 更新内存状态、触发 `RuleEngine`、渲染 Dashboard，但 session 结束后所有数据丢失。V6 的 EventStore 只能靠 `cli-v6.ts` 的合成数据填充。
+
+这是"在线采集 → 离线训练 → 在线预测"闭环断裂的第一环。
+
+### 16.2 方案
+
+新建 `src/realtime/V6Sink.ts`，在 V2.5 事件循环中同步把每个 `AgentLogEvent` 转为 `IDEEvent` 写入 V6 SQLite。session 结束时自动触发 `FeaturePipeline.computeSession()` 计算特征。
+
+### 16.3 事件映射
+
+| AgentLogEvent (V2.5) | IDEEvent (V6) | 说明 |
+|----------------------|---------------|------|
+| `session_start` | `session_start` | 携带 model / languages / dependencies |
+| `session_end` | `session_end` | 触发特征计算 |
+| `llm_request` | `chat` + `completion` | 拆分为用户 prompt 和 AI 响应两个事件 |
+| `tool_call(read_file)` | `read_file` | 文件读取 |
+| `tool_call(run_test)` | `run_test` | 测试运行 |
+| `tool_call(terminal)` | `terminal` | 终端命令 |
+| `tool_call(commit)` | `commit` | Git 提交 |
+| `tool_call(other)` | `tool_call` | 通用工具调用 |
+| `edit(success: true)` | `accept` | 编辑成功 → 接受变更 |
+| `edit(success: false)` | `retry` | 编辑失败 → 将重试 |
+
+`llm_request` 拆分为 `chat` + `completion` 是关键设计：V6 的 FeaturePipeline 需要分别统计 prompt 和 completion 的 token。每个 `llm_request` 自动生成唯一 `promptId`（`${sessionId}-prompt-${n}`）。
+
+`edit` 映射到 `accept`/`retry` 是启发式推断：V2.5 的 MockLogSource 不显式跟踪 AI completion 的 accept/reject，但 edit 的 success 状态是合理的代理。
+
+### 16.4 集成
+
+`cli.ts` 在 V2.5 事件循环中加一行 `v6sink.ingest(event)`：
+
+```ts
+const db = openDatabase('./data/aea-realtime.db');
+const v6sink = new V6Sink(eventStore, pipeline, { workspaceId: 'realtime-workspace' });
+
+for await (const event of source.watch()) {
+  const state = sessions.apply(event);      // V2.5: 内存状态
+  const alerts = engine.evaluate(state, event);
+  v6sink.ingest(event);                     // V6: 写 SQLite + session_end 时算特征
+  // ... dashboard rendering
+}
+```
+
+Session 结束后，cli.ts 打印 V6 分析摘要：事件数、事件类型分布、session features、behavior features。
+
+### 16.5 效果
+
+`npm run demo` 现在同时产出：
+- V2.5 实时 Dashboard（health score / alerts / advisor）
+- V6 SQLite 数据库（`./data/aea-realtime.db`），含 18 个 IDEEvent + 完整 session/behavior features
+
+这标志着 **AEA 首次实现实时采集闭环**：V2.5 的实时观测能力与 V6 的存储/分析能力不再割裂。
+
+---
+
+## 17. 回归测试
+
+### 17.1 框架
+
+使用 `vitest`（Vite 原生测试框架），零配置支持 TypeScript + ESM。`npm run test` 运行全部测试，`npm run test:watch` 进入 watch 模式。
+
+### 17.2 测试覆盖
+
+| 文件 | 测试数 | 覆盖内容 |
+|------|--------|---------|
+| `tests/V6Sink.test.ts` | 6 | 事件转换：session_start / llm_request 拆分 / read_file / edit→accept|retry / session_end 触发特征计算 |
+| `tests/FeaturePipeline.test.ts` | 9 | session features（acceptRate / retryRate / retryCount）+ behavior features（workflowEntropy / retryBurstScore / avgReadBeforeAsk / workflowLength / contextExpansionSpeed）+ computeAllSessions |
+| `tests/EmbeddingPipeline.test.ts` | 9 | normalize 单位范数 / cosine 相似度（相同=1 / 正交=0 / 相反=-1）/ 10 维 session 向量 / 相似 session 检索 |
+| `tests/GraphBuilder.test.ts` | 8 | 节点创建 / 边创建 / workspace_language 去重 / file 去重 / prompt_file 边 / session_tool 边 / GraphQueries（retry-recovery 查询 / tool 影响查询） |
+| `tests/WorkflowMiner.test.ts` | 5 | directly-follows 频率 / dependency metric（单向=2/3 / 双向≈0）/ 失败模式识别 / 节点度数 |
+| `tests/AnalyticsEngine.test.ts` | 5 | 失败分类（retry_loop / context_explosion / none）/ llmPayload 字段完整性 / healthDirection / contextROI |
+| **合计** | **45** | 覆盖 V6 全六层关键纯函数 |
+
+### 17.3 测试策略
+
+- **内存 SQLite**：每个测试用 `openDatabase(':memory:')` 创建独立数据库，无文件 I/O，测试间无状态泄漏。
+- **Seed helpers**：`tests/helpers.ts` 提供 `seedGoodSession` / `seedRetrySession` / `seedExplodeSession` 三种典型 session 模式，复用率高。
+- **纯函数优先**：优先测试无副作用的纯函数（cosineSimilarity / normalize / WorkflowMiner.mine），再测试有状态的 Store/Pipeline。
+- **不测试 LLM 调用**：LLM 层依赖外部 API，测试中不触发真实调用，仅验证 fallback 逻辑。
+
+### 17.4 文件清单
+
+| 路径 | 职责 |
+|------|------|
+| `tests/helpers.ts` | createTestContext / dispose / seedGoodSession / seedRetrySession / seedExplodeSession |
+| `tests/V6Sink.test.ts` | V6Sink 事件转换测试 |
+| `tests/FeaturePipeline.test.ts` | Feature 计算（session + behavior）测试 |
+| `tests/EmbeddingPipeline.test.ts` | Embedding 生成 + cosine 相似度测试 |
+| `tests/GraphBuilder.test.ts` | Graph 构建 + 去重 + GraphQueries 测试 |
+| `tests/WorkflowMiner.test.ts` | Heuristic Miner 算法测试 |
+| `tests/AnalyticsEngine.test.ts` | 失败分类 + llmPayload 测试 |

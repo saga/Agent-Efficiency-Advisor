@@ -56,6 +56,7 @@ src/
     LogParser.ts        # Copilot/generic JSONL parser
     SessionState.ts     # mutable session state updates
     SessionManager.ts   # session registry
+    V6Sink.ts           # bridge: AgentLogEvent → IDEEvent → V6 SQLite
   rules/
     Rule.ts             # base rule + alert helper
     RuleEngine.ts       # evaluate all rules
