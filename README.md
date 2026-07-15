@@ -112,36 +112,59 @@ src/
   scripts/
     train_catboost.py   # Python training script
     predict_catboost.py # Python inference script
-  store/                # V6 SQLite-backed Event Store + Feature Store
+  entity/               # V7: Canonical Entity Layer (Session/Prompt/Completion/Workspace/ToolInvocation/Failure/Recommendation)
+    types.ts            # 7 Entity interfaces + EntityBundle + EntityType
+    EntityBuilder.ts    # Event → EntityBundle
+  store/                # V6/V7 SQLite-backed Event Store + Feature Store
     types.ts            # IDEEvent + 5 feature domain interfaces
-    schema.ts           # SQLite migrations (events / feature_* / embeddings)
+    schema.ts           # SQLite migrations (events / feature_* / embeddings / graph / session_feature_view)
     EventStore.ts       # event insert/query
-    FeatureStore.ts     # versioned feature read/write + training matrix
+    EventRegistry.ts    # V7: Event Schema + Provider Mapping + 版本管理
+    FeatureStore.ts     # V7: versioned feature read/write + session_feature_view Materialized View
+    LabelStore.ts       # V7: independent label storage + training matrix assembly
     FeatureRegistry.ts  # central feature catalog
-    FeaturePipeline.ts  # 5 aggregators + 31 core feature definitions
-  embedding/            # V6 Layer 3: Embedding Store
+    FeaturePipeline.ts  # V7: thin orchestrator over Aggregator → Calculator → Store
+    aggregators/        # V7: Event → Intermediate Aggregate
+      WorkspaceAggregator.ts
+      SessionAggregator.ts
+      PromptAggregator.ts
+    calculators/        # V7: Aggregate → Feature
+      WorkspaceFeatureCalculator.ts
+      ContextFeatureCalculator.ts
+      BehaviorFeatureCalculator.ts
+  embedding/            # V6/V7 Layer 3: Embedding Store
     EmbeddingStore.ts   # SQLite-backed vectors + cosine similarity search
-    EmbeddingPipeline.ts# feature-based session/prompt vectors (log-scale + L2 norm)
-  ml/                   # CatBoost + V6 Layer 4: Analytics Engine
+    EmbeddingProvider.ts        # V7: plugin interface
+    FeatureEmbeddingProvider.ts # V7: feature-v1 provider
+    EmbeddingPipeline.ts        # V7: provider-orchestrator (not hard-coded)
+  ml/                   # CatBoost + V6/V7 Layer 4: Analytics Engine
     features.ts         # feature extraction for ML
     dataset.ts          # synthetic dataset generation + CSV export
     CatBoostTrainer.ts  # train CatBoost via Python bridge
     CatBoostModel.ts    # predict with trained .cbm model
     CatBoostAdvisor.ts  # real-time recommendation from SessionState
     BehaviorModel.ts    # first-order Markov chain over event sequences
-    WorkflowMiner.ts    # Heuristic Miner for process discovery
+    WorkflowMiner.ts    # Heuristic Miner for process discovery (reads Event directly)
     TrendAnalysis.ts    # linear-regression + 7-day rolling avg trend detection
-    AnalyticsEngine.ts  # orchestrates ML + produces llmPayload for LLM layer
+    AnalyticsEngine.ts  # V7: thin orchestrator; only Merge
+    AnalyticsSummary.ts # V7: strongly-typed LLM payload schema
+    AnalyzerRegistry.ts # V7: registry for Behavior/Trend/Workflow/Failure/ROI analyzers
+    analyzers/          # V7: 5 standalone analyzer plugins
+      BehaviorAnalyzer.ts
+      WorkflowAnalyzer.ts
+      TrendAnalyzer.ts
+      FailureAnalyzer.ts
+      ROIAnalyzer.ts
     shadow/             # shadow evaluation framework
       ShadowRunner.ts
     feedback/           # outcome → training data feedback loop
       FeedbackCollector.ts
-  llm/                  # V6 Layer 5: LLM Insights Engine
+  llm/                  # V6/V7 Layer 5: LLM Insights Engine
     InsightsEngine.ts   # pi-ai driven natural-language insights (template fallback)
-  graph/                # V6 Layer 6: Session Graph (Temporal Property Graph)
+  graph/                # V6/V7 Layer 6: Session Graph (Temporal Property Graph)
     types.ts            # GraphNodeType / GraphEdgeType / GraphNode / GraphEdge
     GraphStore.ts       # SQLite node/edge storage + neighbor traversal
-    GraphBuilder.ts     # build graph from EventStore + FeatureStore
+    GraphBuilder.ts     # V7: build graph from Entity (not raw Event); node stores featureVersion Reference
     GraphQueries.ts     # 4 canonical queries (retry-recovery, workspace failure, tool impact, failure clusters)
   history/              # V1/V2 historical trace analysis
     collector.ts
@@ -152,8 +175,8 @@ src/
   cli.ts                # real-time observability demo
   cli-train.ts          # CatBoost training demo
   cli-predict.ts        # CatBoost prediction demo
-  cli-store.ts          # V6 Event Store + Feature Store demo
-  cli-v6.ts             # V6 full 5-layer Observatory demo
+  cli-store.ts          # V6/V7 Event Store + Feature Store + LabelStore demo
+  cli-v6.ts             # V6/V7 full 5-layer Observatory demo
 ```
 
 ## Quick start
@@ -201,6 +224,7 @@ npm run build       # compile to dist/
 | V5 | Agent Runtime Intelligence (state machine + event sourcing + plugins) | Done |
 | V5.2 | Trustworthy Decision Engine (calibration + fusion + explainability + evaluation) | Done |
 | V6 | AI Development Observatory (Event + Feature + Embedding + ML + LLM + Session Graph) | Done |
+| V7 | Architecture Refactoring: Entity Layer + Split Feature Pipeline + Embedding/Analyzer Plugin + Materialized View + Registries | Done |
 
 ## Design constraints
 
