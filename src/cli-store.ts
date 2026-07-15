@@ -8,6 +8,7 @@ import { EventStore } from './store/EventStore.js';
 import { FeatureRegistry } from './store/FeatureRegistry.js';
 import { FeatureStore } from './store/FeatureStore.js';
 import { FeaturePipeline } from './store/FeaturePipeline.js';
+import { LabelStore } from './store/LabelStore.js';
 import type { IDEEvent } from './store/types.js';
 
 const DB_PATH = './data/aea.db';
@@ -77,7 +78,8 @@ function main() {
   const eventStore = new EventStore(db);
   const registry = new FeatureRegistry(db);
   const featureStore = new FeatureStore(db);
-  const pipeline = new FeaturePipeline(db, eventStore, featureStore, registry);
+  const pipeline = new FeaturePipeline(featureStore, eventStore, registry);
+  const labelStore = new LabelStore(db);
 
   // 1. Register feature definitions
   pipeline.initializeRegistry();
@@ -144,12 +146,14 @@ function main() {
   console.log();
 
   // 7. Materialize a training matrix with synthetic labels
+  // v7.md #5: Label 独立于 FeatureStore，使用 LabelStore 写入和组装 Training Matrix。
   console.log('═══ Training Matrix (behavior features + labels) ═══');
-  featureStore.writeLabel('sess-good', 'behavior', 'mini', 'outcome');
-  featureStore.writeLabel('sess-retry-storm', 'behavior', 'large', 'outcome');
-  featureStore.writeLabel('sess-context-explosion', 'behavior', 'large', 'outcome');
+  labelStore.write('sess-good', 'behavior', 'mini', 'outcome');
+  labelStore.write('sess-retry-storm', 'behavior', 'large', 'outcome');
+  labelStore.write('sess-context-explosion', 'behavior', 'large', 'outcome');
 
-  const matrix = featureStore.getTrainingMatrix('behavior', 1, 'outcome');
+  const behaviorFeatures = featureStore.readAll('behavior', 1).map((f) => ({ entityId: f.entityId, features: f.features }));
+  const matrix = labelStore.getTrainingMatrix(behaviorFeatures, 'behavior', 'outcome');
   console.log(`  rows: ${matrix.length}`);
   for (const row of matrix) {
     console.log(`  ${row.entityId.padEnd(24)} → label=${row.label.padEnd(6)} features={workflowEntropy=${row.features.workflowEntropy}, retryBurstScore=${row.features.retryBurstScore}, toolSwitchFrequency=${row.features.toolSwitchFrequency}}`);

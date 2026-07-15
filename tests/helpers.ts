@@ -6,6 +6,7 @@ import { EventStore } from '../src/store/EventStore.js';
 import { FeatureRegistry } from '../src/store/FeatureRegistry.js';
 import { FeatureStore } from '../src/store/FeatureStore.js';
 import { FeaturePipeline } from '../src/store/FeaturePipeline.js';
+import { EntityBuilder } from '../src/entity/EntityBuilder.js';
 import type { IDEEvent } from '../src/store/types.js';
 
 export interface TestContext {
@@ -14,6 +15,7 @@ export interface TestContext {
   featureStore: FeatureStore;
   pipeline: FeaturePipeline;
   registry: FeatureRegistry;
+  entityBuilder: EntityBuilder;
 }
 
 export function createTestContext(): TestContext {
@@ -21,8 +23,9 @@ export function createTestContext(): TestContext {
   const eventStore = new EventStore(db);
   const registry = new FeatureRegistry(db);
   const featureStore = new FeatureStore(db);
-  const pipeline = new FeaturePipeline(db, eventStore, featureStore, registry);
-  return { db, eventStore, featureStore, pipeline, registry };
+  const pipeline = new FeaturePipeline(featureStore, eventStore, registry);
+  const entityBuilder = new EntityBuilder();
+  return { db, eventStore, featureStore, pipeline, registry, entityBuilder };
 }
 
 export function dispose(ctx: TestContext): void {

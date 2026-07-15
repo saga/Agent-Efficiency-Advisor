@@ -1,4 +1,5 @@
-// AnalyticsEngine tests — verify failure classification + Context ROI + llmPayload.
+// AnalyticsEngine tests — verify failure classification + Context ROI + summary.
+// v7.md #8/#9: 测试拆分后的 Analyzer 编排器 + 强类型 AnalyticsSummary。
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTestContext, dispose, seedGoodSession, seedRetrySession, seedExplodeSession, type TestContext } from './helpers.js';
@@ -41,9 +42,6 @@ describe('AnalyticsEngine', () => {
       const report = engine.analyze();
       const explodeFailure = report.failures.find((f) => f.sessionId === 'sess-explode');
       expect(explodeFailure).toBeDefined();
-      // Explode session has contextExpansionSpeed > 500 → context_explosion
-      // OR retryBurstScore > 0.5 && retryRate > 0.3 → retry_loop
-      // The first matching rule wins. Let's check it's one of these.
       expect(['context_explosion', 'retry_loop']).toContain(explodeFailure!.failureType);
     });
 
@@ -58,22 +56,24 @@ describe('AnalyticsEngine', () => {
     });
   });
 
-  describe('llmPayload', () => {
-    it('produces compact JSON payload with required fields', () => {
+  describe('summary (v7.md #9: AnalyticsSummary)', () => {
+    it('produces strongly-typed summary with required fields', () => {
       seedGoodSession(ctx);
       seedRetrySession(ctx);
       ctx.pipeline.computeAllSessions();
 
       const report = engine.analyze();
-      const payload = report.llmPayload;
+      const summary = report.summary;
 
-      expect(payload).toHaveProperty('sessions');
-      expect(payload).toHaveProperty('events');
-      expect(payload).toHaveProperty('avgAcceptRate');
-      expect(payload).toHaveProperty('avgRetryRate');
-      expect(payload).toHaveProperty('healthDirection');
-      expect(payload).toHaveProperty('topFailure');
-      expect(payload).toHaveProperty('anomalyScore');
+      expect(summary).toHaveProperty('sessions');
+      expect(summary).toHaveProperty('events');
+      expect(summary).toHaveProperty('avgAcceptRate');
+      expect(summary).toHaveProperty('avgRetryRate');
+      expect(summary).toHaveProperty('healthDirection');
+      expect(summary).toHaveProperty('topFailure');
+      expect(summary).toHaveProperty('anomalyScore');
+      expect(summary).toHaveProperty('contextROI');
+      expect(Array.isArray(summary.contextROI)).toBe(true);
     });
 
     it('reports declining health when retry sessions dominate', () => {
@@ -82,8 +82,7 @@ describe('AnalyticsEngine', () => {
       ctx.pipeline.computeAllSessions();
 
       const report = engine.analyze();
-      // With 2 retry sessions and 0 good sessions, health should be declining or stable
-      expect(['declining', 'stable']).toContain(report.llmPayload.healthDirection);
+      expect(['declining', 'stable']).toContain(report.summary.healthDirection);
     });
   });
 
@@ -96,8 +95,6 @@ describe('AnalyticsEngine', () => {
 
       const report = engine.analyze();
       expect(Array.isArray(report.contextROI)).toBe(true);
-      // With 3 sessions, some features should have measurable correlation
-      // (may be empty if all correlations are below threshold)
     });
   });
 });

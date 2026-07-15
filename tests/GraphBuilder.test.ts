@@ -17,7 +17,7 @@ describe('GraphBuilder', () => {
   beforeEach(() => {
     ctx = createTestContext();
     graphStore = new GraphStore(ctx.db);
-    builder = new GraphBuilder(ctx.eventStore, ctx.featureStore, graphStore);
+    builder = new GraphBuilder(ctx.eventStore, ctx.featureStore, graphStore, ctx.entityBuilder);
   });
 
   afterEach(() => {
@@ -126,7 +126,7 @@ describe('GraphQueries', () => {
   beforeEach(() => {
     ctx = createTestContext();
     graphStore = new GraphStore(ctx.db);
-    builder = new GraphBuilder(ctx.eventStore, ctx.featureStore, graphStore);
+    builder = new GraphBuilder(ctx.eventStore, ctx.featureStore, graphStore, ctx.entityBuilder);
     embeddingStore = new EmbeddingStore(ctx.db);
     embeddingPipeline = new EmbeddingPipeline(ctx.eventStore, ctx.featureStore, embeddingStore);
   });

@@ -16,6 +16,8 @@ This follows the pattern: **online collection → offline training → online pr
 
 ## Architecture
 
+### V2.5 Realtime Layer
+
 ```
 Copilot Debug Log
        │
@@ -43,6 +45,25 @@ Copilot Debug Log
                                         │  Manager    │
                                         └─────────────┘
 ```
+
+### V7 Observatory Layer
+
+V7 在 V6 基础上强化了架构边界，核心演进为：
+
+```
+Event → Entity → Feature → Embedding → ML → Graph → LLM
+```
+
+1. **Canonical Entity Layer** (`src/entity/`): Session/Prompt/Completion/Workspace/ToolInvocation/Failure/Recommendation 7 个领域实体，统一事件与特征/图/嵌入/LLM 之间的语义。
+2. **Feature Pipeline 三层拆分** (`src/store/aggregators/`, `src/store/calculators/`):
+   - Aggregator: Event → Intermediate Aggregate
+   - FeatureCalculator: Aggregate → Feature
+   - FeatureStore: Persistence + Materialized View
+3. **Embedding Provider 插件化** (`src/embedding/EmbeddingProvider.ts`): `feature-v1` 是默认实现，未来可接入 `text-embedding-3-small` / `nomic` / `bge-m3` 而无需修改 Pipeline。
+4. **AnalyticsEngine 薄编排** (`src/ml/analyzers/`): 5 个独立 Analyzer（Behavior/Workflow/Trend/Failure/ROI）+ 编排器只负责 Merge。
+5. **Three Registries** (`FeatureRegistry` / `EventRegistry` / `AnalyzerRegistry`): 补齐元数据体系，支持插件化扩展。
+6. **Feature Materialized View** (`session_feature_view`): 保留 JSON Blob 的同时，为高频分析字段建立真实列，可直接用 SQL/DuckDB/CatBoost 查询。
+7. **LabelStore 独立**: Label 与 Feature 生命周期解耦，Training Matrix 由 `LabelStore` 组装。
 
 ## Project structure
 

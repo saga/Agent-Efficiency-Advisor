@@ -2,7 +2,7 @@
 
 import Database from 'better-sqlite3';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export function openDatabase(path: string): Database.Database {
   const db = new Database(path);
@@ -126,6 +126,33 @@ function migrate(db: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges(source_id);
       CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target_id);
       CREATE INDEX IF NOT EXISTS idx_graph_edges_type   ON graph_edges(type);
+    `);
+  }
+
+  // --- v7.md #4: Feature Materialized View ---
+  // session_feature_view 将 behavior + session 的高频分析字段物化为真实列，
+  // 让 DuckDB / SQLite / SQL / CatBoost 直接查询，无需 JSON_EXTRACT。
+  if (current < 4) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_feature_view (
+        session_id               TEXT    NOT NULL PRIMARY KEY,
+        accept_rate              REAL,
+        retry_rate               REAL,
+        completion_count         INTEGER,
+        retry_count              INTEGER,
+        accept_count             INTEGER,
+        reject_count             INTEGER,
+        duration                 INTEGER,
+        workflow_entropy         REAL,
+        retry_burst_score        REAL,
+        tool_switch_frequency    REAL,
+        context_expansion_speed  REAL,
+        workflow_length          INTEGER,
+        avg_read_before_ask      REAL,
+        edit_after_accept_ratio  REAL
+      );
+      CREATE INDEX IF NOT EXISTS idx_sfv_accept_rate ON session_feature_view(accept_rate);
+      CREATE INDEX IF NOT EXISTS idx_sfv_retry_rate ON session_feature_view(retry_rate);
     `);
   }
 

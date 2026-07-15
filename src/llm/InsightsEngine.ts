@@ -10,6 +10,7 @@
 
 import type { Context, Model, Api, AssistantMessage } from '@earendil-works/pi-ai';
 import type { AnalyticsReport } from '../ml/AnalyticsEngine.js';
+import type { AnalyticsSummary } from '../ml/AnalyticsSummary.js';
 
 const SYSTEM_PROMPT = `You are an AI Development Observatory analyst. You receive structured metrics about AI coding agent sessions and must provide a concise natural-language insight.
 
@@ -81,7 +82,7 @@ export class InsightsEngine {
   async generate(report: AnalyticsReport): Promise<InsightResult> {
     await this.ensureInitialized();
 
-    const payload = JSON.stringify(report.llmPayload, null, 2);
+    const payload = JSON.stringify(report.summary, null, 2);
 
     if (!this.compat || !this.model) {
       return { text: this.templateExplanation(report), source: 'template' };
@@ -130,17 +131,17 @@ export class InsightsEngine {
 
   /**
    * Template-based explanation — used when no LLM is configured.
-   * Follows v6.md Section 11's example format.
+   * v7.md #9: 使用强类型 AnalyticsSummary 替代 loose JSON。
    */
   private templateExplanation(report: AnalyticsReport): string {
-    const p = report.llmPayload;
+    const p: AnalyticsSummary = report.summary;
     const lines: string[] = [];
 
     // Summary
     lines.push(`分析 ${p.sessions} 个会话（${p.events} 个事件）的观察结果：`);
 
     // Health direction
-    const health = String(p.healthDirection ?? 'stable');
+    const health = p.healthDirection;
     if (health === 'improving') {
       lines.push(`整体健康度呈改善趋势，Accept Rate 的 7 日滚动均值为 ${p.avgAcceptRate}。`);
     } else if (health === 'declining') {
@@ -150,39 +151,32 @@ export class InsightsEngine {
     }
 
     // Top failure
-    const topFailure = String(p.topFailure ?? 'none');
+    const topFailure = p.topFailure;
     if (topFailure !== 'none') {
       lines.push(`主要失败模式为 ${topFailure}，异常分数 ${p.anomalyScore}。`);
-      const pattern = String(p.topFailurePattern ?? '');
-      if (pattern) lines.push(`典型失败路径：${pattern}`);
+      if (p.topFailurePattern) lines.push(`典型失败路径：${p.topFailurePattern}`);
     }
 
-    // Context ROI
-    const roi = p.contextROI as Record<string, number>[] | undefined;
-    if (roi && roi.length > 0) {
-      const topPositive = roi.find((r) => Object.values(r)[0] as number > 0);
-      const topNegative = roi.find((r) => Object.values(r)[0] as number < 0);
+    // Context ROI (v7.md #9: 强类型，不再需要 Record<string, number> 转换)
+    if (p.contextROI.length > 0) {
+      const topPositive = p.contextROI.find((r) => r.contribution > 0);
+      const topNegative = p.contextROI.find((r) => r.contribution < 0);
       if (topPositive) {
-        const [feat, val] = Object.entries(topPositive)[0];
-        lines.push(`Context ROI：${feat} 对 Accept Rate 有正向贡献（+${val}）。`);
+        lines.push(`Context ROI：${topPositive.feature} 对 Accept Rate 有正向贡献（+${topPositive.contribution}）。`);
       }
       if (topNegative) {
-        const [feat, val] = Object.entries(topNegative)[0];
-        lines.push(`Context ROI：${feat} 呈负相关（${val}），建议优化。`);
+        lines.push(`Context ROI：${topNegative.feature} 呈负相关（${topNegative.contribution}），建议优化。`);
       }
     }
 
     // Trend
-    const acceptTrend = String(p.trendAcceptRate ?? 'stable');
-    const retryTrend = String(p.trendRetryRate ?? 'stable');
-    if (acceptTrend !== 'stable' || retryTrend !== 'stable') {
-      lines.push(`趋势：Accept Rate ${acceptTrend}，Retry Rate ${retryTrend}。`);
+    if (p.trendAcceptRate !== 'stable' || p.trendRetryRate !== 'stable') {
+      lines.push(`趋势：Accept Rate ${p.trendAcceptRate}，Retry Rate ${p.trendRetryRate}。`);
     }
 
     // Top workflow
-    const workflow = String(p.topWorkflow ?? '');
-    if (workflow && workflow !== 'n/a') {
-      lines.push(`最常见工作流：${workflow}`);
+    if (p.topWorkflow && p.topWorkflow !== 'n/a') {
+      lines.push(`最常见工作流：${p.topWorkflow}`);
     }
 
     // Recommendation

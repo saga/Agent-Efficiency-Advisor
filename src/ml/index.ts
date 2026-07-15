@@ -4,3 +4,7 @@ export * from './CatBoostTrainer.js';
 export * from './CatBoostModel.js';
 export * from './CatBoostAdvisor.js';
 export * from './pythonResolver.js';
+export * from './AnalyticsEngine.js';
+export * from './AnalyticsSummary.js';
+export * from './AnalyzerRegistry.js';
+export * from './analyzers/index.js';

@@ -33,7 +33,7 @@ async function main() {
   const eventStore = new EventStore(db);
   const registry = new FeatureRegistry(db);
   const featureStore = new FeatureStore(db);
-  const pipeline = new FeaturePipeline(db, eventStore, featureStore, registry);
+  const pipeline = new FeaturePipeline(featureStore, eventStore, registry);
   const v6sink = new V6Sink(eventStore, pipeline, {
     workspaceId: 'realtime-workspace',
     languages: ['TypeScript'],

@@ -17,6 +17,7 @@ import { InsightsEngine } from './llm/InsightsEngine.js';
 import { GraphStore } from './graph/GraphStore.js';
 import { GraphBuilder } from './graph/GraphBuilder.js';
 import { GraphQueries } from './graph/GraphQueries.js';
+import { EntityBuilder } from './entity/EntityBuilder.js';
 import type { IDEEvent } from './store/types.js';
 
 const DB_PATH = './data/aea-v6.db';
@@ -108,10 +109,11 @@ async function main() {
   const eventStore = new EventStore(db);
   const registry = new FeatureRegistry(db);
   const featureStore = new FeatureStore(db);
-  const pipeline = new FeaturePipeline(db, eventStore, featureStore, registry);
+  const pipeline = new FeaturePipeline(featureStore, eventStore, registry);
   const embeddingStore = new EmbeddingStore(db);
   const embeddingPipeline = new EmbeddingPipeline(eventStore, featureStore, embeddingStore);
   const graphStore = new GraphStore(db);
+  const entityBuilder = new EntityBuilder();
 
   console.log('═══════════════════════════════════════════════════════════');
   console.log('  V6 Six-Layer Architecture Demo');
@@ -200,7 +202,7 @@ async function main() {
 
   // LLM Payload
   console.log('\n  [LLM Payload — ~500 tokens of structured JSON]');
-  console.log(JSON.stringify(report.llmPayload, null, 2).split('\n').map((l) => `    ${l}`).join('\n'));
+  console.log(JSON.stringify(report.summary, null, 2).split('\n').map((l) => `    ${l}`).join('\n'));
   console.log();
 
   // ═══ Layer 5: LLM (Insights Engine) ═══
@@ -221,7 +223,7 @@ async function main() {
 
   // ═══ Layer 6: Session Graph (v6.md Section 12) ═══
   console.log('─── Layer 6: Session Graph (Temporal Property Graph) ───');
-  const builder = new GraphBuilder(eventStore, featureStore, graphStore);
+  const builder = new GraphBuilder(eventStore, featureStore, graphStore, entityBuilder);
   const built = builder.build();
   const gstats = graphStore.stats();
   console.log(`  Built ${built.nodes} nodes / ${built.edges} edges from ${built.sessions} sessions`);
