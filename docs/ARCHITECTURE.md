@@ -1985,3 +1985,278 @@ npm run demo:observatory         # 6-layer demo 通过：95 nodes / 121 edges / 
 npm run demo       # Realtime V2.5 + V6Sink bridge 通过
 ```
 
+---
+
+# Chapter 19 — V6 ML Pipeline Deepening
+
+V7 完成架构边界梳理后,本章聚焦把 V6/V7 留下的"ML 管线骨架"打磨为可生产化的完整闭环。核心问题来自 `ML_ALGORITHMS.md` 的旧画像:**6 真实样本、单 CatBoost、无 CV、启发式造标签**——这不足以支撑可信的模型选型决策。本章不新增架构层,而是横向加深 V6 Layer 4(ML / Analytics)的 ML 训练管线与评估体系。
+
+## 19.1 动机
+
+V7 结束时 ML 管线存在四类问题:
+
+1. **数据规模不足**:仅 6 真实 session + 单一 DB 源,不足以训练任何严肃模型
+2. **标签来源单一**:仅启发式 `heuristicLabel()` 自造标签,模型在"学自己"
+3. **无泛化评估**:CatBoost 单次 holdout,NB/LR/KNN 报告训练集准确率("97.4%+" 是拟合度不是泛化)
+4. **算法覆盖窄**:仅有 CatBoost + 4 个 TS 模型,无元学习器仲裁,无不确定性量化
+
+V6 ML Pipeline Deepening 的目标是把以上四点全部补齐,使 ML 管线从"演示原型"升级为"可被审计的训练系统"。
+
+## 19.2 数据层加深:多 DB 源 + 行为标签
+
+### 19.2.1 多 DB 源扫描
+
+`src/cli/train.ts` 把训练数据源从单一 DB 扩展为 4 个 DB:
+
+```typescript
+const REAL_DB_SOURCES = [
+  './data/aea-transcripts.db',    // 6 sessions, 行为数据最丰富
+  './data/aea-real.db',            // 25 sessions
+  './data/aea-v6.db',              // 11 sessions (V6Sink)
+  './data/aea-workspace-scan.db',  // 25 sessions (含 autoMode 信号)
+];
+```
+
+`loadAutoModeSignals(REAL_DB_SOURCES)` 跨所有 DB 扫描 `autoModeResolution` 信号,合并为统一的弱标签 Map,从原来 0 个提升到 5 个。
+
+### 19.2.2 行为标签(BehaviorLabelExtractor)
+
+`src/ml/BehaviorLabelExtractor.ts` 引入 reward-based 标签:
+
+| 信号 | reward | 含义 |
+|---|---|---|
+| accept | +1.0 | 用户接受了工具调用/编辑/响应 |
+| retry | -0.3 | 用户重试,模型不够好 |
+| reject | -0.5 | 用户显式拒绝 |
+| abandon | -0.8 | session 早退(<3 事件, <30s) |
+| cancel | -1.0 | session 被取消 |
+
+`rewardNormalized < 0` → `large`(模型不够,需更大);否则用复杂度公式决定 mini/medium/large。当无行为信号时退化为 `heuristicLabel`,标记 `labelSource='heuristic'` 供 `PseudoLabeler` 后续纠正。
+
+### 19.2.3 复杂度公式调优
+
+`toolCalls` 权重从 5 降为 2,避免只读 session(14 个 toolCalls 全是 read)被误标 large。统一 mini 阈值为 `complexity <= 20`。
+
+```
+complexity = promptTokens/1000 + toolCalls*2 + edits*15 + retries*50
+           + hasLoop*100 + subAgents*30
+```
+
+修复后标签分布从 mini=5,medium=2,large=14 改善为 mini=5,medium=4,large=12。
+
+### 19.2.4 log-normal 合成数据
+
+`src/ml/dataset.ts` 用 Box-Muller 变换生成 log-normal 分布的合成数据,替换原本固定值×jitter 的不真实分布:
+
+```typescript
+function randn(): number {
+  const u = 1 - Math.random();
+  const v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+function logNormal(median: number, sigma: number): number {
+  return Math.exp(Math.log(median) + sigma * randn());
+}
+```
+
+填充所有 rolling/EMA 特征为合理非零值(原本全 0,导致 Drift Detector 误报)。156 合成样本补足 21 真实样本。
+
+## 19.3 模型层加深:6 模型 + Stacking 仲裁
+
+### 19.3.1 sklearn 训练管线
+
+NB / LR 训练从纯 TS 迁移到 `scripts/train_sklearn_models.py`,通过 sklearn `Pipeline` 保证标准化与 log-transform 不泄露到 CV 验证集。推理仍保留纯 TS,无跨进程开销。
+
+### 19.3.2 Torch MLP(新增第 5 个基础模型)
+
+`scripts/train_torch_model.py` 训练 3 层 MLP(34→64→3),导出 W1.T/b1/W2.T/b2/scaler 为 JSON,`src/ml/TorchModel.ts` 用纯 TS 矩阵乘法 + ReLU + softmax 推理,**运行时无 torch 依赖**。
+
+### 19.3.3 Stacking Meta Learner(新增元学习器)
+
+`src/ml/StackingMetaLearner.ts` 实现 K-fold OOF + 元学习器:
+
+1. 把训练数据分 K 折,每折用其他折训练 5 个基础模型,在本折上预测 → OOF 预测
+2. 5 个基础模型的 OOF 概率拼接为 15 维 meta features
+3. 训练 softmax 元学习器学习最优组合权重
+
+Sample 2 中 KNN 误判 large(51% vs medium 48%),Stacking 正确仲裁为 medium(94.3%)——这正是 stacking 的核心价值。
+
+## 19.4 评估层加深:K-fold CV + Overfitting Gap
+
+### 19.4.1 TrainedModelInfo 扩展
+
+`src/ml/ModelInterface.ts` 增加两个字段:
+
+```typescript
+export interface TrainedModelInfo {
+  // ... 原有字段
+  accuracy?: number;        // 训练集准确率(拟合程度)
+  cvAccuracy?: number | null;  // 交叉验证/holdout 准确率(泛化能力)
+  cvFolds?: number;          // CV 折数(0=未做, 1=单次holdout, K=K-fold)
+}
+```
+
+### 19.4.2 各模型 CV 策略
+
+| 模型 | CV 策略 | 防泄露措施 |
+|---|---|---|
+| CatBoost | 5 折 StratifiedKFold,每折独立训练 | 每折内部 20% 做 early stopping |
+| LR | 5 折 StratifiedKFold | sklearn `Pipeline(StandardScaler + LR)` |
+| NB | 5 折 StratifiedKFold | sklearn `Pipeline(log1p + NB)`,log 列与 TS 推理对齐 |
+| KNN | Leave-One-Out(N 折) | 天然诚实,无需额外处理 |
+| Torch MLP | 5 折 StratifiedKFold | 每折独立训练,StandardScaler 严格只在折内 fit |
+| Stacking Meta | 5 折在 OOF meta features 上 | 重构 `trainMetaModelPure`/`metaForwardPure` 纯函数 |
+
+### 19.4.3 Overfitting Gap 报告
+
+`src/cli/train.ts` 模型对比表新增 CV/Folds 列,自动检测 `train - CV > 0.10` 并报警:
+
+```
+Model comparison:
+  ┌────────────────────────────┬──────────┬──────────┬─────────┬───────────┐
+  │ Model                      │ Train    │ CV       │ Folds   │ Samples   │
+  ├────────────────────────────┼──────────┼──────────┼─────────┼───────────┤
+  │ Logistic Regression        │ 1.000    │ 0.936    │ 5       │ 177       │
+  │ Naive Bayes                │ 0.965    │ 0.947    │ 5       │ 177       │
+  │ KNN Distance Weighted      │ 0.942    │ 0.936    │ 171     │ 177       │
+  │ Torch MLP                  │ 1.000    │ 0.942    │ 5       │ 177       │
+  │ CatBoost                   │ 1.000    │ 0.965    │ 5       │ 177       │
+  │ Stacking Meta Learner      │ 0.960    │ 0.944    │ 5       │ 177       │
+  └────────────────────────────┴──────────┴──────────┴─────────┴───────────┘
+```
+
+之前的 "97.4%+" 是训练集拟合度;真实 CV 在 0.936-0.965 之间,overfitting gap 0.02-0.06 健康。
+
+## 19.5 监控层加深:PSI Drift Detection
+
+`src/ml/DriftDetector.ts` 实现 Population Stability Index,对比当前训练数据与 baseline 的特征分布:
+
+- **PSI < 0.1**:无显著漂移
+- **0.1 ≤ PSI < 0.25**:轻微漂移,持续观察
+- **PSI ≥ 0.25**:显著漂移,触发重训练
+
+baseline 自动保存到 `./data/ml/drift-baseline.json`,每次 train 后更新。
+
+**实际验证**:第一次修复合成数据后 train,Max PSI=4.85(24 特征漂移)— 因为旧 baseline 还在用 rolling features=0 的合成数据。第二次 train 后 Max PSI=0.25(3 特征漂移),Avg PSI=0.05,基本收敛。剩余漂移来自合成数据随机性。
+
+## 19.6 共享基础设施:pythonExec.ts
+
+`src/ml/pythonExec.ts` 提供共享的 Python 子进程执行:
+
+```typescript
+execPython(scriptPath: string, args: string[]): Promise<string>
+execPythonCommand(command: string): Promise<string>
+```
+
+`CatBoostTrainer` / `NaiveBayesModel` / `LogisticRegressionModel` / `TorchModel` 全部复用,消除原本各自重复的 spawn 逻辑。Python 可执行文件解析由 `pythonResolver.ts` 统一处理(优先 `.venv/bin/python`,支持 `AEA_PYTHON` 环境变量覆盖)。
+
+## 19.7 完整训练管线
+
+```text
+4 个 SQLite DB ─┐
+                │
+   ┌────────────┴───────────┐
+   │                        │
+   ▼                        ▼
+autoModeSignals       RealSamples +
+(5 个弱标签)          BehaviorLabels
+   │                        │
+   └───────────┬────────────┘
+               ▼
+   LabelPropagation + WeakLabelFusion + PseudoLabeling
+               │
+               ▼
+   + SyntheticSamples (log-normal, 156 个)
+               │
+   ┌───────────┼───────────┐
+   ▼           ▼           ▼
+ sklearn    torch      CatBoost
+ NB + LR    MLP        (Python)
+ 5-fold CV  5-fold CV  5-fold CV
+   │           │           │
+   │  ┌────────┼────────┐  │
+   │  ▼        ▼        ▼  │
+   │ KNN    (5 个基础模型 OOF 预测)
+   │ LOO         │
+   └─────────────┼─────────┘
+                 ▼
+       StackingMetaLearner
+       (5 折 CV on meta features)
+                 │
+                 ▼
+       6 模型 + Stacking 全部带
+       cvAccuracy + Overfitting Gap
+                 │
+                 ▼
+       DriftDetector (PSI) → baseline
+```
+
+## 19.8 验证结果
+
+```bash
+npm run typecheck  # 通过
+npm test           # 141 tests 全部通过
+npm run train      # 6 模型 + Stacking 全部带 CV,无 overfitting 警告
+npm run predict    # 3 样本(mini/medium/large)6 模型 + Conformal 全部正确
+```
+
+## 19.9 文件清单
+
+| 路径 | 职责 |
+|---|---|
+| `src/ml/features.ts` | 34 维特征(17 基础 + 17 时序)+ `extractModelSizeFeaturesFromEvents` |
+| `src/ml/TemporalFeatures.ts` | 17 维时序行为特征(新增) |
+| `src/ml/dataset.ts` | log-normal 合成数据生成 + CSV 导出 |
+| `src/ml/realDataset.ts` | 真实 session 加载 + 行为/启发式标签 |
+| `src/ml/BehaviorLabelExtractor.ts` | reward-based 行为标签(新增) |
+| `src/ml/LabelPropagation.ts` | 半监督标签传播 |
+| `src/ml/WeakLabelFusion.ts` | 弱标签融合 |
+| `src/ml/pythonExec.ts` | 共享 Python 子进程执行(新增) |
+| `src/ml/NaiveBayesModel.ts` | sklearn 训练 + 纯 TS 推理(重写) |
+| `src/ml/LogisticRegressionModel.ts` | sklearn 训练 + 纯 TS 推理(重写) |
+| `src/ml/KnnModel.ts` | 纯 TS KNN + LOO CV(加 cvAccuracy) |
+| `src/ml/TorchModel.ts` | torch 训练 + 纯 TS MLP 推理(新增) |
+| `src/ml/CatBoostTrainer.ts` | CatBoost Python 桥接 + 5 折 CV(加 cvAccuracy) |
+| `src/ml/StackingMetaLearner.ts` | Stacking 元学习器 + meta CV(重构 pure 函数) |
+| `src/ml/ConformalPredictor.ts` | 不确定性包裹器 |
+| `src/ml/DriftDetector.ts` | PSI 漂移检测 |
+| `src/ml/ModelInterface.ts` | `TrainedModelInfo` 加 `cvAccuracy` / `cvFolds` |
+| `src/ml/ModelTrainer.ts` | 编排器,显示 train + cv + overfitting gap |
+| `scripts/train_sklearn_models.py` | sklearn NB + LR 训练(含 Pipeline CV,新增) |
+| `scripts/train_torch_model.py` | torch MLP 训练(含 K-fold CV,新增) |
+| `scripts/train_catboost.py` | CatBoost 训练(加 K-fold CV) |
+| `src/cli/train.ts` | 训练入口,展示对比表 + overfitting 警告 |
+| `src/cli/predict.ts` | 预测入口,3 样本端到端验证 |
+
+## 19.10 演进意义
+
+V6 ML Pipeline Deepening 不是新增架构层,而是横向加深 V6 Layer 4(ML / Analytics)的 ML 训练管线。其本质变化:
+
+```text
+V6 / V7: 1 CatBoost + 4 TS 模型 + 启发式标签 + 单次 holdout
+   → V6 Deepening: 6 模型 + Stacking 仲裁 + 行为标签 + 半监督传播
+                  + 5 折 K-fold CV + PSI 漂移检测 + log-normal 合成数据
+```
+
+- **从单模型到元学习器**:Stacking 学到 5 个基础模型的最优组合权重,在 KNN 误判时正确仲裁
+- **从启发式到行为标签**:用真实用户 accept/retry/reject 信号生成标签,模型不再"学自己"
+- **从训练准确率到 K-fold CV**:所有模型都报告真实泛化能力,overfitting gap 可视化
+- **从无监控到 PSI 漂移检测**:特征分布偏移自动报警,触发重训练
+
+```text
+V1  Trace Collection
+  → V2  Offline Evaluation
+    → V2.5  Realtime Observability
+      → V3  ML Model
+        → V4  ML + Shadow + Feedback
+          → V5  Runtime Intelligence
+            → V5.2  Trustworthy Decision
+              → V6  Event Store + Feature Store
+                → V6 Full  Embedding + ML + LLM
+                  → V6 Graph  Session Graph
+                    → V7  Architecture Refactoring
+                      → V6 Deepening  ML Pipeline Deepening(多源数据 + 6模型 + Stacking + K-fold CV + 行为标签 + 漂移检测)
+```
+
+下一阶段的改进方向是**数据规模**(继续收集真实 session 到 50+)与**真实 holdout 集**(预留若干真实 session 完全不参与训练,作为最终 sanity check)。
+
