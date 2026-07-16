@@ -123,7 +123,7 @@ export class StackingMetaLearner implements TrainableModel {
     this.samplesSeen = samples.length;
     this.trained = true;
 
-    // Compute meta accuracy
+    // Compute meta training accuracy (on OOF predictions — meta 模型看到了自己的训练数据,略乐观)
     let correct = 0;
     for (let i = 0; i < calibratedMetaFeatures.length; i++) {
       const probs = this.metaForward(calibratedMetaFeatures[i]);
@@ -131,6 +131,10 @@ export class StackingMetaLearner implements TrainableModel {
       if (pred === metaLabels[i]) correct++;
     }
     this.metaAccuracy = calibratedMetaFeatures.length > 0 ? correct / calibratedMetaFeatures.length : 0;
+
+    // Outer K-fold CV on meta-features — 评估 meta 模型本身的真实泛化能力
+    // (base model 的 OOF 预测已经是诚实的,这里只对 meta 层做 CV)
+    const cvResult = this.evaluateMetaCv(calibratedMetaFeatures, metaLabels, k);
 
     // Save
     this.save(modelPath);
@@ -141,6 +145,75 @@ export class StackingMetaLearner implements TrainableModel {
       modelPath,
       trainSamples: samples.length,
       accuracy: this.metaAccuracy,
+      cvAccuracy: cvResult.accuracy,
+      cvFolds: cvResult.folds,
+    };
+  }
+
+  /**
+   * 对 meta 模型做 K-fold CV。
+   * metaFeatures 已经是 base model 的 OOF 预测(诚实的),这里只对 meta 层做 CV,
+   * 避免用 meta 训练集准确率高估泛化能力。
+   */
+  private evaluateMetaCv(
+    metaFeatures: number[][],
+    metaLabels: number[],
+    k: number,
+  ): { accuracy: number | null; folds: number } {
+    const n = metaFeatures.length;
+    if (n < 4 || k < 2) return { accuracy: null, folds: 0 };
+
+    // 分层 K-fold(按 label 分组)
+    const indicesByLabel = new Map<number, number[]>();
+    for (let i = 0; i < n; i++) {
+      const lbl = metaLabels[i];
+      if (!indicesByLabel.has(lbl)) indicesByLabel.set(lbl, []);
+      indicesByLabel.get(lbl)!.push(i);
+    }
+    // 打乱每个类别的索引
+    for (const [, idxs] of indicesByLabel) {
+      for (let i = idxs.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [idxs[i], idxs[j]] = [idxs[j], idxs[i]];
+      }
+    }
+
+    // 把每个类别的样本均匀分到 K 折
+    const foldAssignment = new Array(n).fill(0);
+    let fold = 0;
+    for (const [, idxs] of indicesByLabel) {
+      for (const idx of idxs) {
+        foldAssignment[idx] = fold % k;
+        fold++;
+      }
+    }
+
+    let correct = 0;
+    let total = 0;
+    for (let f = 0; f < k; f++) {
+      const trainIdx: number[] = [];
+      const testIdx: number[] = [];
+      for (let i = 0; i < n; i++) {
+        if (foldAssignment[i] === f) testIdx.push(i);
+        else trainIdx.push(i);
+      }
+      if (trainIdx.length === 0 || testIdx.length === 0) continue;
+
+      const trainFeats = trainIdx.map((i) => metaFeatures[i]);
+      const trainLbls = trainIdx.map((i) => metaLabels[i]);
+      const { weights, biases } = this.trainMetaModelPure(trainFeats, trainLbls);
+
+      for (const i of testIdx) {
+        const probs = this.metaForwardPure(metaFeatures[i], weights, biases);
+        const pred = probs.indexOf(Math.max(...probs));
+        if (pred === metaLabels[i]) correct++;
+        total++;
+      }
+    }
+
+    return {
+      accuracy: total > 0 ? correct / total : null,
+      folds: k,
     };
   }
 
@@ -246,11 +319,24 @@ export class StackingMetaLearner implements TrainableModel {
   }
 
   private trainMetaModel(metaFeatures: number[][], metaLabels: number[]): void {
+    const { weights, biases } = this.trainMetaModelPure(metaFeatures, metaLabels);
+    this.metaWeights = weights;
+    this.metaBiases = biases;
+  }
+
+  /**
+   * 纯函数版 meta 训练:返回 weights/biases,不修改 this。
+   * 用于 K-fold CV(同一份 metaFeatures 上训练多个 meta 模型)。
+   */
+  private trainMetaModelPure(
+    metaFeatures: number[][],
+    metaLabels: number[],
+  ): { weights: number[][]; biases: number[] } {
     const numMetaFeatures = NUM_CLASSES * NUM_BASE_MODELS;
-    this.metaWeights = Array.from({ length: NUM_CLASSES }, () =>
+    const weights = Array.from({ length: NUM_CLASSES }, () =>
       Array(numMetaFeatures).fill(0),
     );
-    this.metaBiases = [0, 0, 0];
+    const biases = [0, 0, 0];
 
     const lr = 0.1;
     const l2 = 0.01;
@@ -258,22 +344,34 @@ export class StackingMetaLearner implements TrainableModel {
 
     for (let iter = 0; iter < iterations; iter++) {
       for (let i = 0; i < metaFeatures.length; i++) {
-        const logits = this.metaForward(metaFeatures[i]);
+        const logits = this.metaForwardPure(metaFeatures[i], weights, biases);
         const grad = logits.map((p, c) => p - (metaLabels[i] === c ? 1 : 0));
 
         for (let c = 0; c < NUM_CLASSES; c++) {
           for (let f = 0; f < numMetaFeatures; f++) {
-            this.metaWeights[c][f] -= lr * (grad[c] * metaFeatures[i][f] + l2 * this.metaWeights[c][f]);
+            weights[c][f] -= lr * (grad[c] * metaFeatures[i][f] + l2 * weights[c][f]);
           }
-          this.metaBiases[c] -= lr * grad[c];
+          biases[c] -= lr * grad[c];
         }
       }
     }
+    return { weights, biases };
   }
 
   private metaForward(x: number[]): number[] {
-    const logits = this.metaBiases.map((b, c) =>
-      b + this.metaWeights[c].reduce((sum, w, f) => sum + w * x[f], 0),
+    return this.metaForwardPure(x, this.metaWeights, this.metaBiases);
+  }
+
+  /**
+   * 纯函数版 meta 前向:使用传入的 weights/biases,不依赖 this 状态。
+   */
+  private metaForwardPure(
+    x: number[],
+    weights: number[][],
+    biases: number[],
+  ): number[] {
+    const logits = biases.map((b, c) =>
+      b + weights[c].reduce((sum, w, f) => sum + w * x[f], 0),
     );
     const max = Math.max(...logits);
     const exps = logits.map((l) => Math.exp(l - max));
