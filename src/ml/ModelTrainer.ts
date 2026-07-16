@@ -15,6 +15,7 @@ import { CatBoostTrainer } from './CatBoostTrainer.js';
 import { LogisticRegressionModel } from './LogisticRegressionModel.js';
 import { NaiveBayesModel } from './NaiveBayesModel.js';
 import { KnnModel } from './KnnModel.js';
+import { TorchModel } from './TorchModel.js';
 import { ConformalPredictor } from './ConformalPredictor.js';
 import { LabelPropagation, type AutoModeSignal } from './LabelPropagation.js';
 import { StackingMetaLearner } from './StackingMetaLearner.js';
@@ -190,6 +191,7 @@ export class ModelTrainer {
       new LogisticRegressionModel(500, 0.01, 0.01),
       new NaiveBayesModel(),
       new KnnModel(),
+      new TorchModel(),
     ];
   }
 

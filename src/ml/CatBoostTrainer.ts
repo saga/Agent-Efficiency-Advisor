@@ -1,9 +1,8 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { TrainingSample } from './dataset.js';
 import { generateSyntheticDataset, saveDataset } from './dataset.js';
-import { resolvePythonExecutable } from './pythonResolver.js';
+import { execPython } from './pythonExec.js';
 
 export interface TrainOptions {
   trainCsv?: string;
@@ -58,7 +57,6 @@ export class CatBoostTrainer {
     const pythonScript = resolveScript('scripts/train_catboost.py', options.pythonScript);
 
     const args = [
-      pythonScript,
       '--train-csv', trainCsv,
       '--model-out', modelOut,
       '--feature-importance-out', featureImportanceOut,
@@ -71,33 +69,8 @@ export class CatBoostTrainer {
       args.push('--test-csv', options.testCsv);
     }
 
-    const python = resolvePythonExecutable();
-    const stdout = await execPython([python, ...args]);
+    const stdout = await execPython(pythonScript, args);
     const result = JSON.parse(stdout) as TrainResult;
     return result;
   }
-}
-
-function execPython(command: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    proc.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    proc.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`CatBoost training failed (${code}): ${stderr || stdout}`));
-      } else {
-        resolve(stdout.trim());
-      }
-    });
-  });
 }

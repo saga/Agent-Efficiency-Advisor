@@ -1,24 +1,24 @@
 // GaussianNaiveBayes — 高斯朴素贝叶斯分类器
 //
-// 纯 TS 实现,无 Python 依赖。预测 <0.1ms。
-// 6 个样本即可估计每类的均值/方差,天然处理缺失特征(独立假设下)。
-// 作为 LR 的 baseline,防止过拟合。
+// 训练由 Python sklearn 完成(见 scripts/train_sklearn_models.py),导出均值/方差/先验。
+// 预测纯 TS 实现,无跨进程开销 (<0.1ms)。
+// 16 个计数特征做 log(1+x) 变换,防止长尾分布导致方差爆炸。
 
 import fs from 'node:fs';
+import path from 'node:path';
 import type { ModelPrediction, TrainableModel, TrainedModelInfo } from './ModelInterface.js';
 import type { TrainingSample } from './dataset.js';
+import { saveDataset } from './dataset.js';
 import {
   FEATURE_COLUMNS,
   INDEX_LABEL,
-  LABEL_INDEX,
   type ModelSizeFeatures,
-  type ModelSizeLabel,
 } from './features.js';
+import { execPython } from './pythonExec.js';
 
 const NUM_CLASSES = 3;
-const VARIANCE_SMOOTHING = 1e-6; // 防止方差为 0
 
-/** 需要做 log(1+x) 变换的计数/大范围特征 */
+/** 需要做 log(1+x) 变换的计数/大范围特征(必须与 train_sklearn_models.py 一致) */
 const LOG_TRANSFORM_COLS = new Set([
   'promptTokens', 'completionTokens', 'contextTokens',
   'toolCalls', 'readFiles', 'edits', 'retries',
@@ -27,7 +27,7 @@ const LOG_TRANSFORM_COLS = new Set([
   'rollingAvgTokens', 'rollingAvgDuration', 'emaTokens',
 ]);
 
-/** 对指定特征做 log(1+x) 变换，压缩大范围计数特征的动态范围 */
+/** 对指定特征做 log(1+x) 变换,压缩大范围计数特征的动态范围 */
 function applyLogTransform(features: ModelSizeFeatures): number[] {
   return FEATURE_COLUMNS.map((c) => {
     const v = Number(features[c]);
@@ -52,89 +52,22 @@ export class NaiveBayesModel implements TrainableModel {
   async train(samples: TrainingSample[], modelPath: string): Promise<TrainedModelInfo> {
     if (samples.length === 0) throw new Error('No training samples');
 
-    const X = samples.map((s) => applyLogTransform(s.features));
-    const y = samples.map((s) => LABEL_INDEX[s.label]);
-    const numFeatures = FEATURE_COLUMNS.length;
+    // 保存 CSV,调用 Python sklearn 训练
+    const outDir = path.dirname(modelPath);
+    const { csvPath } = saveDataset(samples, outDir);
+    const scriptPath = path.resolve(process.cwd(), 'scripts/train_sklearn_models.py');
+    const stdout = await execPython(scriptPath, ['--train-csv', csvPath, '--nb-out', modelPath, '--model', 'nb']);
+    const result = JSON.parse(stdout) as { naivebayes: { accuracy: number; featureImportance: Record<string, number> } };
 
-    // 按类别分组
-    this.means = Array.from({ length: NUM_CLASSES }, () => Array(numFeatures).fill(0));
-    this.variances = Array.from({ length: NUM_CLASSES }, () => Array(numFeatures).fill(0));
-    const classCounts = Array(NUM_CLASSES).fill(0);
-
-    // 计算均值
-    for (let i = 0; i < X.length; i++) {
-      const c = y[i];
-      classCounts[c]++;
-      for (let f = 0; f < numFeatures; f++) {
-        this.means[c][f] += X[i][f];
-      }
-    }
-    for (let c = 0; c < NUM_CLASSES; c++) {
-      if (classCounts[c] > 0) {
-        for (let f = 0; f < numFeatures; f++) {
-          this.means[c][f] /= classCounts[c];
-        }
-      }
-    }
-
-    // 计算方差
-    for (let i = 0; i < X.length; i++) {
-      const c = y[i];
-      for (let f = 0; f < numFeatures; f++) {
-        const diff = X[i][f] - this.means[c][f];
-        this.variances[c][f] += diff * diff;
-      }
-    }
-    for (let c = 0; c < NUM_CLASSES; c++) {
-      if (classCounts[c] > 1) {
-        for (let f = 0; f < numFeatures; f++) {
-          this.variances[c][f] = this.variances[c][f] / classCounts[c] + VARIANCE_SMOOTHING;
-        }
-      } else {
-        // 只有一个样本的类:用全局方差
-        this.variances[c] = Array(numFeatures).fill(VARIANCE_SMOOTHING);
-      }
-    }
-
-    // 先验概率
-    this.priors = classCounts.map((c) => c / samples.length);
-
-    // 持久化
-    const modelData: NBModelData = {
-      means: this.means,
-      variances: this.variances,
-      priors: this.priors,
-    };
-    fs.writeFileSync(modelPath, JSON.stringify(modelData), 'utf-8');
-
-    // 计算准确率
-    let correct = 0;
-    for (let i = 0; i < X.length; i++) {
-      const pred = this.predictClass(X[i]);
-      if (pred === y[i]) correct++;
-    }
-
-    // 特征重要性:用类间均值差/方差作为区分度
-    const featureImportance: Record<string, number> = {};
-    for (let f = 0; f < numFeatures; f++) {
-      let separation = 0;
-      for (let c1 = 0; c1 < NUM_CLASSES; c1++) {
-        for (let c2 = c1 + 1; c2 < NUM_CLASSES; c2++) {
-          const diff = Math.abs(this.means[c1][f] - this.means[c2][f]);
-          const avgStd = (Math.sqrt(this.variances[c1][f]) + Math.sqrt(this.variances[c2][f])) / 2 || 1;
-          separation += diff / avgStd;
-        }
-      }
-      featureImportance[FEATURE_COLUMNS[f]] = separation;
-    }
+    await this.load(modelPath);
 
     return {
       modelName: this.name,
       modelType: this.type,
       modelPath,
       trainSamples: samples.length,
-      accuracy: correct / samples.length,
-      featureImportance,
+      accuracy: result.naivebayes.accuracy,
+      featureImportance: result.naivebayes.featureImportance,
     };
   }
 
@@ -163,11 +96,6 @@ export class NaiveBayesModel implements TrainableModel {
       probabilities: probs,
       confidence: probs[classIndex],
     };
-  }
-
-  private predictClass(x: number[]): number {
-    const logProbs = this.computeLogProbs(x);
-    return logProbs.indexOf(Math.max(...logProbs));
   }
 
   private computeLogProbs(x: number[]): number[] {

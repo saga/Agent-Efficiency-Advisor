@@ -28,7 +28,7 @@ export interface TrainedModelInfo {
   featureImportance?: Record<string, number>;
 }
 
-export type ModelType = 'catboost' | 'logistic' | 'naivebayes' | 'knn' | 'conformal';
+export type ModelType = 'catboost' | 'logistic' | 'naivebayes' | 'knn' | 'conformal' | 'torch';
 
 /**
  * 可训练的模型接口 — 所有分类器实现此接口。
