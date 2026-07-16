@@ -76,7 +76,14 @@ export function loadRealTrainingSamples(options: RealDatasetOptions = {}): Train
     if (!features) continue;
 
     // Skip degenerate sessions with no meaningful activity.
-    if (features.promptTokens === 0 && features.toolCalls === 0 && features.readFiles === 0) {
+    // 真实 chatSessions 数据可能只有 chat/completion 事件(无 tool_call/edit),
+    // 所以只要 promptTokens 或 completionTokens > 0 就保留。
+    if (
+      features.promptTokens === 0 &&
+      features.completionTokens === 0 &&
+      features.toolCalls === 0 &&
+      features.readFiles === 0
+    ) {
       continue;
     }
 

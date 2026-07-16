@@ -139,6 +139,7 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
   let subAgents = 0;
   let autoModePredictedLabel = 0;
   let autoModeConfidence = 0;
+  let totalElapsedMs = 0;
   const filesRead = new Set<string>();
   const filesEdited = new Set<string>();
   const toolSequence: string[] = [];
@@ -147,10 +148,33 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
     const m = e.metadata ?? {};
     switch (e.eventType) {
       case 'chat':
-        promptTokens += Number(m.tokenCount ?? m.contextToken ?? m.messageLength ?? 0);
+        // chat 事件只有 messageLength(字符数),不是 token 数。
+        // 真实 promptTokens 在 completion 事件中,这里只记 messageLength
+        // 作为 fallback(约 4 字符 ≈ 1 token)。
+        if (m.tokenCount) {
+          promptTokens += Number(m.tokenCount);
+        } else if (m.contextToken) {
+          promptTokens += Number(m.contextToken);
+        }
         break;
       case 'completion':
-        completionTokens += Number(m.tokenCount ?? m.responseLength ?? 0);
+        // 真实 Copilot completion 事件含 promptTokens 和 outputTokens
+        if (m.promptTokens !== undefined) {
+          promptTokens += Number(m.promptTokens);
+        } else if (m.tokenCount) {
+          promptTokens += Number(m.tokenCount);
+        }
+        if (m.outputTokens !== undefined) {
+          completionTokens += Number(m.outputTokens);
+        } else if (m.completionTokens !== undefined) {
+          completionTokens += Number(m.completionTokens);
+        } else if (m.responseLength) {
+          completionTokens += Number(m.responseLength);
+        }
+        // 提取计时信息(最后一个 completion 的 totalElapsedMs 即 session 总时长)
+        if (m.totalElapsedMs !== undefined) {
+          totalElapsedMs = Number(m.totalElapsedMs);
+        }
         // 从 completion 事件中提取 Copilot autoMode 信号
         if (m.autoModePredictedLabel !== undefined) {
           autoModePredictedLabel = encodeAutoModeLabel(String(m.autoModePredictedLabel));
@@ -193,9 +217,11 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
   // Derive contextTokens as prompt + completion if not directly observed.
   contextTokens = contextTokens || promptTokens + completionTokens;
 
+  // 优先用 completion 事件中的 totalElapsedMs(真实 Copilot 计时),
+  // 其次用 session_start → session_end 的时间差。
   const startTime = events[0]?.timestamp ?? 0;
   const endTime = endEvent?.timestamp ?? events[events.length - 1]?.timestamp ?? startTime;
-  const elapsedMs = Math.max(0, endTime - startTime);
+  const elapsedMs = totalElapsedMs || Math.max(0, endTime - startTime);
 
   const readToEditRatio = edits > 0 ? readFiles / edits : readFiles;
   const retryRate = toolCalls > 0 ? retries / toolCalls : 0;
