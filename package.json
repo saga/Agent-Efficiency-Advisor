@@ -12,6 +12,7 @@
     "trust": "tsx src/cli-trust.ts",
     "store": "tsx src/cli-store.ts",
     "v6": "tsx src/cli-v6.ts",
+    "real-copilot": "tsx scripts/run-real-copilot-logs.ts",
     "train": "tsx src/cli-train.ts",
     "predict": "tsx src/cli-predict.ts",
     "test": "vitest run",
