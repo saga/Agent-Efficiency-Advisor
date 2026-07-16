@@ -51,13 +51,19 @@ def main():
     model.fit(train_pool, eval_set=test_pool, verbose=False)
     model.save_model(args.model_out)
 
-    preds = model.predict(X_test).flatten()
-    accuracy = float((preds == y_test.values).mean())
+    # Train accuracy (拟合程度)
+    train_preds = model.predict(X_train).flatten()
+    train_accuracy = float((train_preds == y_train.values).mean())
+    # Holdout test accuracy (泛化估计, 1 折)
+    test_preds = model.predict(X_test).flatten()
+    test_accuracy = float((test_preds == y_test.values).mean())
 
     result = {
         "modelOut": args.model_out,
         "iterations": model.tree_count_,
-        "accuracy": accuracy,
+        "accuracy": train_accuracy,
+        "cvAccuracy": test_accuracy,
+        "cvFolds": 1,
         "featureImportance": dict(zip(feature_cols, model.get_feature_importance().tolist())),
     }
 

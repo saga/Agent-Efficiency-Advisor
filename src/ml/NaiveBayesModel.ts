@@ -57,7 +57,14 @@ export class NaiveBayesModel implements TrainableModel {
     const { csvPath } = saveDataset(samples, outDir);
     const scriptPath = path.resolve(process.cwd(), 'scripts/train_sklearn_models.py');
     const stdout = await execPython(scriptPath, ['--train-csv', csvPath, '--nb-out', modelPath, '--model', 'nb']);
-    const result = JSON.parse(stdout) as { naivebayes: { accuracy: number; featureImportance: Record<string, number> } };
+    const result = JSON.parse(stdout) as {
+      naivebayes: {
+        accuracy: number;
+        cvAccuracy: number | null;
+        cvFolds: number;
+        featureImportance: Record<string, number>;
+      };
+    };
 
     await this.load(modelPath);
 
@@ -67,6 +74,8 @@ export class NaiveBayesModel implements TrainableModel {
       modelPath,
       trainSamples: samples.length,
       accuracy: result.naivebayes.accuracy,
+      cvAccuracy: result.naivebayes.cvAccuracy,
+      cvFolds: result.naivebayes.cvFolds,
       featureImportance: result.naivebayes.featureImportance,
     };
   }

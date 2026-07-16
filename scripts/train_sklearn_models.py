@@ -12,8 +12,10 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.naive_bayes import GaussianNB
-from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, FunctionTransformer
 
 # Must match NaiveBayesModel.LOG_TRANSFORM_COLS in src/ml/NaiveBayesModel.ts
 LOG_TRANSFORM_COLS = {
@@ -25,6 +27,23 @@ LOG_TRANSFORM_COLS = {
 }
 
 NUM_CLASSES = 3
+# 小数据集用 5 折分层 CV;若某折只有 1 类则降级到 3 折或跳过
+CV_FOLDS = 5
+
+
+def make_log_transformer(feature_cols):
+    """构造一个对 LOG_TRANSFORM_COLS 列做 log1p 的 FunctionTransformer。"""
+    log_idx = [i for i, c in enumerate(feature_cols) if c in LOG_TRANSFORM_COLS]
+
+    def log_transform(X):
+        X = np.asarray(X, dtype=float).copy()
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
+        for i in log_idx:
+            X[:, i] = np.log1p(np.maximum(X[:, i], 0))
+        return X
+
+    return FunctionTransformer(log_transform, validate=False)
 
 
 def apply_log_transform(X, feature_cols):
@@ -34,6 +53,23 @@ def apply_log_transform(X, feature_cols):
         if c in LOG_TRANSFORM_COLS:
             X[:, i] = np.log1p(X[:, i])
     return X
+
+
+def _safe_cv_score(pipeline, X, y, folds):
+    """分层 K-fold CV,样本数或类别不足时自动降级。返回 (cv_acc, n_folds_used)。"""
+    n = len(y)
+    n_classes = len(np.unique(y))
+    # 每折每类至少 1 个样本
+    max_folds = max(2, n // max(1, n_classes))
+    k = min(folds, max_folds)
+    if k < 2 or n < 4:
+        return None, 0
+    try:
+        skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
+        scores = cross_val_score(pipeline, X, y, cv=skf, scoring='accuracy')
+        return float(np.mean(scores)), k
+    except Exception:
+        return None, 0
 
 
 def train_nb(df, feature_cols, out_path):
@@ -55,6 +91,13 @@ def train_nb(df, feature_cols, out_path):
     preds = model.predict(X)
     accuracy = float(np.mean(preds == y))
 
+    # K-fold CV — 用 Pipeline 防止 log transform 在折内/折外泄露
+    cv_pipeline = Pipeline([
+        ('log', make_log_transformer(feature_cols)),
+        ('nb', GaussianNB(var_smoothing=1e-6)),
+    ])
+    cv_acc, cv_k = _safe_cv_score(cv_pipeline, df[feature_cols].values.astype(float), y, CV_FOLDS)
+
     # Feature importance: inter-class mean separation / avg std
     importance = {}
     for f, col in enumerate(feature_cols):
@@ -67,7 +110,7 @@ def train_nb(df, feature_cols, out_path):
                     sep += diff / avg_std
         importance[col] = float(sep)
 
-    return accuracy, importance
+    return accuracy, cv_acc, cv_k, importance
 
 
 def train_lr(df, feature_cols, out_path):
@@ -100,12 +143,19 @@ def train_lr(df, feature_cols, out_path):
     preds = model.predict(X_norm)
     accuracy = float(np.mean(preds == y))
 
+    # K-fold CV — 用 Pipeline 防止 StandardScaler 泄露
+    cv_pipeline = Pipeline([
+        ('scaler', StandardScaler()),
+        ('lr', LogisticRegression(solver='lbfgs', C=100.0, max_iter=500, random_state=42)),
+    ])
+    cv_acc, cv_k = _safe_cv_score(cv_pipeline, X, y, CV_FOLDS)
+
     # Feature importance: mean abs weight across classes
     importance = {}
     for f, col in enumerate(feature_cols):
         importance[col] = float(np.mean(np.abs(model.coef_[:, f])))
 
-    return accuracy, importance
+    return accuracy, cv_acc, cv_k, importance
 
 
 def main():
@@ -129,13 +179,21 @@ def main():
 
     if args.model in ('nb', 'both'):
         nb_path = args.nb_out or f'{out_dir}/naivebayes-model.json'
-        nb_acc, nb_imp = train_nb(df, feature_cols, nb_path)
-        result['naivebayes'] = {'path': nb_path, 'accuracy': nb_acc, 'featureImportance': nb_imp, 'trainSamples': len(df)}
+        nb_acc, nb_cv, nb_cvk, nb_imp = train_nb(df, feature_cols, nb_path)
+        result['naivebayes'] = {
+            'path': nb_path, 'accuracy': nb_acc, 'trainSamples': len(df),
+            'cvAccuracy': nb_cv, 'cvFolds': nb_cvk,
+            'featureImportance': nb_imp,
+        }
 
     if args.model in ('lr', 'both'):
         lr_path = args.lr_out or f'{out_dir}/logistic-model.json'
-        lr_acc, lr_imp = train_lr(df, feature_cols, lr_path)
-        result['logistic'] = {'path': lr_path, 'accuracy': lr_acc, 'featureImportance': lr_imp, 'trainSamples': len(df)}
+        lr_acc, lr_cv, lr_cvk, lr_imp = train_lr(df, feature_cols, lr_path)
+        result['logistic'] = {
+            'path': lr_path, 'accuracy': lr_acc, 'trainSamples': len(df),
+            'cvAccuracy': lr_cv, 'cvFolds': lr_cvk,
+            'featureImportance': lr_imp,
+        }
 
     print(json.dumps(result))
 

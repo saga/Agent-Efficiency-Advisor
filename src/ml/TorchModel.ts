@@ -48,7 +48,13 @@ export class TorchModel implements TrainableModel {
     const { csvPath } = saveDataset(samples, outDir);
     const scriptPath = path.resolve(process.cwd(), 'scripts/train_torch_model.py');
     const stdout = await execPython(scriptPath, ['--train-csv', csvPath, '--model-out', modelPath]);
-    const result = JSON.parse(stdout) as { accuracy: number; featureImportance: Record<string, number>; trainSamples: number };
+    const result = JSON.parse(stdout) as {
+      accuracy: number;
+      cvAccuracy: number | null;
+      cvFolds: number;
+      featureImportance: Record<string, number>;
+      trainSamples: number;
+    };
 
     await this.load(modelPath);
 
@@ -58,6 +64,8 @@ export class TorchModel implements TrainableModel {
       modelPath,
       trainSamples: samples.length,
       accuracy: result.accuracy,
+      cvAccuracy: result.cvAccuracy,
+      cvFolds: result.cvFolds,
       featureImportance: result.featureImportance,
     };
   }

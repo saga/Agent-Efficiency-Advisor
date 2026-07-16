@@ -2,6 +2,7 @@
 //
 // 用法:npm run train
 
+import fs from 'node:fs';
 import { loadRealTrainingSamples, loadRealTrainingSamplesWithMeta } from '../ml/realDataset.js';
 import { generateSyntheticDataset } from '../ml/dataset.js';
 import type { TrainingSample } from '../ml/dataset.js';
@@ -14,9 +15,10 @@ import { WeakLabelFusion, type WeakLabel } from '../ml/WeakLabelFusion.js';
 import { heuristicLabel } from '../ml/realDataset.js';
 
 const REAL_DB_SOURCES = [
-  './data/aea-real-copilot.db',
-  './data/aea-session-store.db',
-  './data/aea-transcripts.db',
+  './data/aea-transcripts.db',    // 6 sessions, 行为数据最丰富(accept/retry/tool_call)
+  './data/aea-real.db',            // 25 sessions (session-store + real-copilot)
+  './data/aea-v6.db',              // 11 sessions (V6Sink)
+  './data/aea-workspace-scan.db',  // 25 sessions (workspace scan, 含 autoMode 信号)
 ];
 
 function summarizeLabels(samples: TrainingSample[]): Record<string, number> {
@@ -28,31 +30,34 @@ function summarizeLabels(samples: TrainingSample[]): Record<string, number> {
 }
 
 /**
- * 从 aea-real.db 中提取 autoModeResolution 信号,用于标签传播。
+ * 从所有 DB 源中提取 autoModeResolution 信号,用于标签传播。
  */
-function loadAutoModeSignals(dbPath: string): Map<string, AutoModeSignal> {
+function loadAutoModeSignals(dbPaths: string[]): Map<string, AutoModeSignal> {
   const signals = new Map<string, AutoModeSignal>();
-  if (!require('node:fs').existsSync(dbPath)) return signals;
 
-  const db = openDatabase(dbPath);
-  const eventStore = new EventStore(db);
+  for (const dbPath of dbPaths) {
+    if (!fs.existsSync(dbPath)) continue;
+    const db = openDatabase(dbPath);
+    const eventStore = new EventStore(db);
 
-  for (const sessionId of eventStore.getSessionIds()) {
-    const events = eventStore.getBySession(sessionId);
-    for (const e of events) {
-      if (e.eventType !== 'completion') continue;
-      const m = e.metadata ?? {};
-      if (m.autoModePredictedLabel !== undefined && m.autoModeConfidence !== undefined) {
-        signals.set(sessionId, {
-          predictedLabel: String(m.autoModePredictedLabel),
-          confidence: Number(m.autoModeConfidence),
-        });
-        break; // 每个 session 只取第一个 autoMode 信号
+    for (const sessionId of eventStore.getSessionIds()) {
+      if (signals.has(sessionId)) continue; // 已有信号,跳过
+      const events = eventStore.getBySession(sessionId);
+      for (const e of events) {
+        if (e.eventType !== 'completion') continue;
+        const m = e.metadata ?? {};
+        if (m.autoModePredictedLabel !== undefined && m.autoModeConfidence !== undefined) {
+          signals.set(sessionId, {
+            predictedLabel: String(m.autoModePredictedLabel),
+            confidence: Number(m.autoModeConfidence),
+          });
+          break; // 每个 session 只取第一个 autoMode 信号
+        }
       }
     }
-  }
 
-  db.close();
+    db.close();
+  }
   return signals;
 }
 
@@ -97,7 +102,7 @@ async function main() {
   }
 
   // 2. 加载 autoModeResolution 信号
-  const autoModeSignals = loadAutoModeSignals(REAL_DB_SOURCES[0]);
+  const autoModeSignals = loadAutoModeSignals(REAL_DB_SOURCES);
   console.log(`\nAutoMode signals: ${autoModeSignals.size} session(s) with Copilot ML predictions`);
   for (const [sid, sig] of autoModeSignals) {
     console.log(`  ${sid.slice(0, 8)}: ${sig.predictedLabel} (conf=${sig.confidence.toFixed(2)})`);
@@ -196,14 +201,31 @@ async function main() {
   }
 
   console.log('\nModel comparison:');
-  console.log('  ┌────────────────────────────┬──────────┬───────────┐');
-  console.log('  │ Model                      │ Accuracy │ Samples   │');
-  console.log('  ├────────────────────────────┼──────────┼───────────┤');
+  console.log('  ┌────────────────────────────┬──────────┬──────────┬─────────┬───────────┐');
+  console.log('  │ Model                      │ Train    │ CV       │ Folds   │ Samples   │');
+  console.log('  ├────────────────────────────┼──────────┼──────────┼─────────┼───────────┤');
   for (const m of result.models) {
-    const acc = m.accuracy !== undefined ? m.accuracy.toFixed(3) : 'n/a';
-    console.log(`  │ ${m.modelName.padEnd(26)} │ ${acc.padEnd(8)} │ ${String(m.trainSamples).padEnd(9)} │`);
+    const trainAcc = m.accuracy !== undefined ? m.accuracy.toFixed(3) : 'n/a';
+    const cvAcc = m.cvAccuracy !== undefined && m.cvAccuracy !== null
+      ? m.cvAccuracy.toFixed(3)
+      : 'n/a';
+    const folds = m.cvFolds !== undefined && m.cvFolds > 0 ? String(m.cvFolds) : '-';
+    console.log(`  │ ${m.modelName.padEnd(26)} │ ${trainAcc.padEnd(8)} │ ${cvAcc.padEnd(8)} │ ${folds.padEnd(7)} │ ${String(m.trainSamples).padEnd(9)} │`);
   }
-  console.log('  └────────────────────────────┴──────────┴───────────┘');
+  console.log('  └────────────────────────────┴──────────┴──────────┴─────────┴───────────┘');
+
+  // Overfitting gap 警告
+  const overfitModels = result.models.filter(
+    (m) => m.accuracy !== undefined && m.cvAccuracy !== undefined && m.cvAccuracy !== null
+      && m.accuracy - m.cvAccuracy > 0.1,
+  );
+  if (overfitModels.length > 0) {
+    console.log(`\n  ⚠ Overfitting detected (train - CV > 0.10) in ${overfitModels.length} model(s):`);
+    for (const m of overfitModels) {
+      const gap = (m.accuracy! - m.cvAccuracy!).toFixed(3);
+      console.log(`    • ${m.modelName}: gap=${gap} (train=${m.accuracy!.toFixed(3)}, cv=${m.cvAccuracy!.toFixed(3)})`);
+    }
+  }
 
   // 特征重要性对比
   for (const m of result.models) {

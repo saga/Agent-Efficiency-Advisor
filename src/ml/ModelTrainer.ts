@@ -97,7 +97,11 @@ export class ModelTrainer {
       try {
         const info = await model.train(samples, modelPath);
         trainResults.push(info);
-        console.log(`  ✓ ${info.modelName}: accuracy=${(info.accuracy ?? 0).toFixed(3)}, samples=${info.trainSamples}`);
+        const trainAcc = (info.accuracy ?? 0).toFixed(3);
+        const cvAcc = info.cvAccuracy !== undefined && info.cvAccuracy !== null
+          ? info.cvAccuracy.toFixed(3)
+          : 'n/a';
+        console.log(`  ✓ ${info.modelName}: train=${trainAcc}, cv=${cvAcc}, samples=${info.trainSamples}`);
       } catch (err) {
         console.error(`  ✗ ${model.name} failed: ${err}`);
       }
@@ -107,7 +111,11 @@ export class ModelTrainer {
     try {
       const catboostInfo = await this.trainCatBoost(samples, outDir);
       trainResults.push(catboostInfo);
-      console.log(`  ✓ ${catboostInfo.modelName}: accuracy=${catboostInfo.accuracy ? (catboostInfo.accuracy * 100).toFixed(1) + '%' : 'n/a'}, samples=${catboostInfo.trainSamples}`);
+      const trainAcc = catboostInfo.accuracy !== undefined ? (catboostInfo.accuracy * 100).toFixed(1) + '%' : 'n/a';
+      const cvAcc = catboostInfo.cvAccuracy !== undefined && catboostInfo.cvAccuracy !== null
+        ? (catboostInfo.cvAccuracy * 100).toFixed(1) + '%'
+        : 'n/a';
+      console.log(`  ✓ ${catboostInfo.modelName}: train=${trainAcc}, cv=${cvAcc}, samples=${catboostInfo.trainSamples}`);
     } catch (err) {
       console.error(`  ✗ CatBoost failed: ${err}`);
     }
@@ -222,6 +230,8 @@ export class ModelTrainer {
       modelPath: result.modelOut,
       trainSamples: samples.length,
       accuracy: result.accuracy,
+      cvAccuracy: result.cvAccuracy,
+      cvFolds: result.cvFolds,
       featureImportance: result.featureImportance,
     };
   }

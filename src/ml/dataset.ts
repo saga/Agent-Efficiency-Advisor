@@ -29,126 +29,168 @@ function pickLabel(index: number, total: number): ModelSizeLabel {
   return 'large';
 }
 
+/** Box-Muller 变换:生成标准正态分布随机数 */
+function randn(): number {
+  const u = 1 - Math.random();
+  const v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+/** 对数正态分布:median 是中位数,sigma 是 log 空间标准差(越大越分散) */
+function logNormal(median: number, sigma: number): number {
+  return Math.exp(Math.log(median) + sigma * randn());
+}
+
+/** 在 [min, max] 范围内均匀取整 */
+function randInt(min: number, max: number): number {
+  return Math.floor(min + Math.random() * (max - min + 1));
+}
+
+/** 以概率 p 返回 1,否则 0 */
+function maybe(p: number): number {
+  return Math.random() < p ? 1 : 0;
+}
+
 function generateFeaturesForLabel(label: ModelSizeLabel): ModelSizeFeatures {
-  const jitter = () => 0.8 + Math.random() * 0.4;
-  const randHour = () => Math.floor(Math.random() * 24);
-  const randDay = () => Math.floor(Math.random() * 7);
-  const randSessions = () => Math.floor(Math.random() * 4);
+  const randHour = () => randInt(0, 23);
+  const randDay = () => randInt(0, 6);
 
   if (label === 'mini') {
-    const hour = randHour();
+    const promptTokens = Math.max(500, Math.round(logNormal(2500, 0.5)));
+    const completionTokens = Math.max(100, Math.round(logNormal(600, 0.5)));
+    const toolCalls = randInt(0, 6);
+    const edits = randInt(0, 2);
+    const acceptRate = 0.85 + Math.random() * 0.15;
+    const elapsedMs = Math.max(1000, Math.round(logNormal(6000, 0.6)));
     return {
-      promptTokens: Math.round(2000 * jitter()),
-      completionTokens: Math.round(500 * jitter()),
-      contextTokens: Math.round(2500 * jitter()),
-      toolCalls: Math.round(3 * jitter()),
-      readFiles: Math.round(3 * jitter()),
-      edits: Math.round(1 * jitter()),
+      promptTokens,
+      completionTokens,
+      contextTokens: promptTokens + completionTokens,
+      toolCalls,
+      readFiles: Math.max(0, toolCalls - edits),
+      edits,
       retries: 0,
-      uniqueFilesRead: 1,
-      uniqueFilesEdited: 1,
-      elapsedMs: Math.round(5000 * jitter()),
-      contextUtilization: 0.05 * jitter(),
-      readToEditRatio: 3,
+      uniqueFilesRead: Math.max(1, Math.round(toolCalls * 0.5)),
+      uniqueFilesEdited: Math.min(edits, 2),
+      elapsedMs,
+      contextUtilization: Math.min(0.1, (promptTokens + completionTokens) / 200000),
+      readToEditRatio: edits > 0 ? toolCalls / edits : toolCalls,
       retryRate: 0,
       hasLoop: 0,
       subAgents: 0,
       autoModePredictedLabel: 1,
-      autoModeConfidence: 0.7 * jitter(),
-      hourOfDay: hour,
+      autoModeConfidence: 0.5 + Math.random() * 0.3,
+      hourOfDay: randHour(),
       dayOfWeek: randDay(),
-      isWeekend: Math.random() > 0.7 ? 1 : 0,
-      chatDurationMs: Math.round(3000 * jitter()),
-      toolDurationMs: Math.round(2000 * jitter()),
-      idleMs: Math.round(1000 * jitter()),
-      chatToToolRatio: 1 * jitter(),
-      acceptRate: 0.9 * jitter(),
+      isWeekend: maybe(0.3),
+      chatDurationMs: Math.round(elapsedMs * 0.4),
+      toolDurationMs: Math.round(elapsedMs * 0.3),
+      idleMs: Math.round(elapsedMs * 0.2),
+      chatToToolRatio: toolCalls > 0 ? 1 + Math.random() : 1,
+      acceptRate,
       cancelRate: 0,
       switchRate: 0,
-      toolSuccessRate: 0.95 * jitter(),
-      rollingAvgTokens: 0,
-      rollingAvgDuration: 0,
-      rollingAcceptRate: 0,
-      emaTokens: 0,
+      toolSuccessRate: acceptRate,
+      rollingAvgTokens: Math.round(promptTokens * (0.7 + Math.random() * 0.6)),
+      rollingAvgDuration: Math.round(elapsedMs * (0.7 + Math.random() * 0.6)),
+      rollingAcceptRate: acceptRate * (0.8 + Math.random() * 0.3),
+      emaTokens: Math.round(promptTokens * (0.5 + Math.random() * 0.5)),
       emaRetryRate: 0,
-      sessionsToday: randSessions(),
+      sessionsToday: randInt(1, 5),
     };
   }
 
   if (label === 'medium') {
+    const promptTokens = Math.max(3000, Math.round(logNormal(15000, 0.6)));
+    const completionTokens = Math.max(800, Math.round(logNormal(4000, 0.6)));
+    const toolCalls = randInt(6, 25);
+    const edits = randInt(2, 8);
+    const retries = maybe(0.4) ? randInt(1, 2) : 0;
+    const acceptRate = 0.65 + Math.random() * 0.2;
+    const elapsedMs = Math.max(5000, Math.round(logNormal(40000, 0.7)));
+    const retryRate = retries / Math.max(1, toolCalls + retries);
     return {
-      promptTokens: Math.round(15000 * jitter()),
-      completionTokens: Math.round(4000 * jitter()),
-      contextTokens: Math.round(19000 * jitter()),
-      toolCalls: Math.round(12 * jitter()),
-      readFiles: Math.round(15 * jitter()),
-      edits: Math.round(4 * jitter()),
-      retries: Math.round(1 * jitter()),
-      uniqueFilesRead: Math.round(5 * jitter()),
-      uniqueFilesEdited: Math.round(3 * jitter()),
-      elapsedMs: Math.round(30000 * jitter()),
-      contextUtilization: 0.25 * jitter(),
-      readToEditRatio: 4,
-      retryRate: 0.05,
-      hasLoop: Math.random() > 0.9 ? 1 : 0,
-      subAgents: 0,
-      autoModePredictedLabel: Math.random() > 0.5 ? 1 : 2,
-      autoModeConfidence: 0.5 * jitter(),
+      promptTokens,
+      completionTokens,
+      contextTokens: promptTokens + completionTokens,
+      toolCalls,
+      readFiles: Math.max(0, toolCalls - edits),
+      edits,
+      retries,
+      uniqueFilesRead: Math.round(toolCalls * 0.4),
+      uniqueFilesEdited: Math.round(edits * 0.7),
+      elapsedMs,
+      contextUtilization: Math.min(0.5, (promptTokens + completionTokens) / 200000),
+      readToEditRatio: edits > 0 ? toolCalls / edits : toolCalls,
+      retryRate,
+      hasLoop: maybe(0.1),
+      subAgents: maybe(0.1) ? 1 : 0,
+      autoModePredictedLabel: maybe(0.5) ? 1 : 2,
+      autoModeConfidence: 0.4 + Math.random() * 0.3,
       hourOfDay: randHour(),
       dayOfWeek: randDay(),
-      isWeekend: Math.random() > 0.7 ? 1 : 0,
-      chatDurationMs: Math.round(15000 * jitter()),
-      toolDurationMs: Math.round(10000 * jitter()),
-      idleMs: Math.round(8000 * jitter()),
-      chatToToolRatio: 0.8 * jitter(),
-      acceptRate: 0.75 * jitter(),
-      cancelRate: 0.05 * jitter(),
-      switchRate: 0.02 * jitter(),
-      toolSuccessRate: 0.8 * jitter(),
-      rollingAvgTokens: 0,
-      rollingAvgDuration: 0,
-      rollingAcceptRate: 0,
-      emaTokens: 0,
-      emaRetryRate: 0,
-      sessionsToday: randSessions(),
+      isWeekend: maybe(0.3),
+      chatDurationMs: Math.round(elapsedMs * 0.35),
+      toolDurationMs: Math.round(elapsedMs * 0.45),
+      idleMs: Math.round(elapsedMs * 0.2),
+      chatToToolRatio: 0.5 + Math.random() * 0.8,
+      acceptRate,
+      cancelRate: Math.random() * 0.08,
+      switchRate: Math.random() * 0.05,
+      toolSuccessRate: acceptRate * (0.9 + Math.random() * 0.1),
+      rollingAvgTokens: Math.round(promptTokens * (0.7 + Math.random() * 0.6)),
+      rollingAvgDuration: Math.round(elapsedMs * (0.7 + Math.random() * 0.6)),
+      rollingAcceptRate: acceptRate * (0.8 + Math.random() * 0.3),
+      emaTokens: Math.round(promptTokens * (0.5 + Math.random() * 0.5)),
+      emaRetryRate: retryRate * (0.5 + Math.random()),
+      sessionsToday: randInt(1, 6),
     };
   }
 
+  // large
+  const promptTokens = Math.max(10000, Math.round(logNormal(60000, 0.7)));
+  const completionTokens = Math.max(3000, Math.round(logNormal(20000, 0.7)));
+  const toolCalls = randInt(20, 80);
+  const edits = randInt(5, 20);
+  const retries = randInt(2, 10);
+  const acceptRate = 0.45 + Math.random() * 0.25;
+  const elapsedMs = Math.max(20000, Math.round(logNormal(150000, 0.8)));
+  const retryRate = retries / Math.max(1, toolCalls + retries);
   return {
-    promptTokens: Math.round(60000 * jitter()),
-    completionTokens: Math.round(20000 * jitter()),
-    contextTokens: Math.round(80000 * jitter()),
-    toolCalls: Math.round(40 * jitter()),
-    readFiles: Math.round(50 * jitter()),
-    edits: Math.round(10 * jitter()),
-    retries: Math.round(5 * jitter()),
-    uniqueFilesRead: Math.round(20 * jitter()),
-    uniqueFilesEdited: Math.round(8 * jitter()),
-    elapsedMs: Math.round(120000 * jitter()),
-    contextUtilization: 0.7 * jitter(),
-    readToEditRatio: 5,
-    retryRate: 0.15,
-    hasLoop: Math.random() > 0.5 ? 1 : 0,
-    subAgents: Math.round(2 * jitter()),
+    promptTokens,
+    completionTokens,
+    contextTokens: promptTokens + completionTokens,
+    toolCalls,
+    readFiles: Math.max(0, toolCalls - edits),
+    edits,
+    retries,
+    uniqueFilesRead: Math.round(toolCalls * 0.4),
+    uniqueFilesEdited: Math.round(edits * 0.7),
+    elapsedMs,
+    contextUtilization: Math.min(0.95, (promptTokens + completionTokens) / 200000),
+    readToEditRatio: edits > 0 ? toolCalls / edits : toolCalls,
+    retryRate,
+    hasLoop: maybe(0.5),
+    subAgents: randInt(0, 4),
     autoModePredictedLabel: 2,
-    autoModeConfidence: 0.85 * jitter(),
+    autoModeConfidence: 0.7 + Math.random() * 0.2,
     hourOfDay: randHour(),
     dayOfWeek: randDay(),
-    isWeekend: Math.random() > 0.7 ? 1 : 0,
-    chatDurationMs: Math.round(60000 * jitter()),
-    toolDurationMs: Math.round(50000 * jitter()),
-    idleMs: Math.round(30000 * jitter()),
-    chatToToolRatio: 0.5 * jitter(),
-    acceptRate: 0.6 * jitter(),
-    cancelRate: 0.1 * jitter(),
-    switchRate: 0.05 * jitter(),
-    toolSuccessRate: 0.65 * jitter(),
-    rollingAvgTokens: 0,
-    rollingAvgDuration: 0,
-    rollingAcceptRate: 0,
-    emaTokens: 0,
-    emaRetryRate: 0,
-    sessionsToday: randSessions(),
+    isWeekend: maybe(0.3),
+    chatDurationMs: Math.round(elapsedMs * 0.3),
+    toolDurationMs: Math.round(elapsedMs * 0.5),
+    idleMs: Math.round(elapsedMs * 0.2),
+    chatToToolRatio: 0.3 + Math.random() * 0.6,
+    acceptRate,
+    cancelRate: 0.05 + Math.random() * 0.1,
+    switchRate: 0.02 + Math.random() * 0.06,
+    toolSuccessRate: acceptRate * (0.85 + Math.random() * 0.15),
+    rollingAvgTokens: Math.round(promptTokens * (0.7 + Math.random() * 0.6)),
+    rollingAvgDuration: Math.round(elapsedMs * (0.7 + Math.random() * 0.6)),
+    rollingAcceptRate: acceptRate * (0.8 + Math.random() * 0.3),
+    emaTokens: Math.round(promptTokens * (0.5 + Math.random() * 0.5)),
+    emaRetryRate: retryRate * (0.5 + Math.random()),
+    sessionsToday: randInt(2, 8),
   };
 }
 

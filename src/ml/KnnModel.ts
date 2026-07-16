@@ -62,19 +62,30 @@ export class KnnModel implements TrainableModel {
     };
     fs.writeFileSync(modelPath, JSON.stringify(modelData), 'utf-8');
 
-    // 训练准确率(leave-one-out)
-    let correct = 0;
+    // 训练集准确率(包含自己,反映拟合程度)
+    let trainCorrect = 0;
+    for (let i = 0; i < this.referenceX.length; i++) {
+      const pred = this.predictClass(this.referenceX[i]);
+      if (pred === this.referenceY[i]) trainCorrect++;
+    }
+    const trainAccuracy = trainCorrect / samples.length;
+
+    // Leave-one-out 准确率(N 折 CV,反映泛化能力)
+    let looCorrect = 0;
     for (let i = 0; i < this.referenceX.length; i++) {
       const pred = this.predictClass(this.referenceX[i], i);
-      if (pred === this.referenceY[i]) correct++;
+      if (pred === this.referenceY[i]) looCorrect++;
     }
+    const looAccuracy = looCorrect / samples.length;
 
     return {
       modelName: this.name,
       modelType: this.type,
       modelPath,
       trainSamples: samples.length,
-      accuracy: correct / samples.length,
+      accuracy: trainAccuracy,
+      cvAccuracy: looAccuracy,
+      cvFolds: samples.length, // LOO = N-fold CV
     };
   }
 

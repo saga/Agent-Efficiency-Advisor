@@ -152,24 +152,17 @@ export function extractBehaviorLabel(
       label = 'large';
     } else {
       // Session succeeded — use complexity to determine needed model size.
-      // Non-edit tool calls (reads, searches) get weight 5; edits get
-      // additional weight 15 (total 20) since editing is far more complex.
+      // Read-only tool calls (reads, searches) get weight 2; edits get
+      // additional weight 15 (total 17) since editing is far more complex.
       const complexity =
         features.promptTokens / 1000 +
-        features.toolCalls * 5 +
+        features.toolCalls * 2 +
         features.edits * 15 +
         features.retries * 50 +
         features.hasLoop * 100 +
         features.subAgents * 30;
 
-      if (
-        features.promptTokens < 8000 &&
-        features.toolCalls <= 5 &&
-        features.edits <= 2 &&
-        features.retries === 0 &&
-        features.hasLoop === 0 &&
-        features.subAgents === 0
-      ) {
+      if (complexity <= 20) {
         label = 'mini';
       } else if (complexity <= 60) {
         label = 'medium';

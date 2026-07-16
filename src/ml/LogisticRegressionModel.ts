@@ -51,7 +51,14 @@ export class LogisticRegressionModel implements TrainableModel {
     const { csvPath } = saveDataset(samples, outDir);
     const scriptPath = path.resolve(process.cwd(), 'scripts/train_sklearn_models.py');
     const stdout = await execPython(scriptPath, ['--train-csv', csvPath, '--lr-out', modelPath, '--model', 'lr']);
-    const result = JSON.parse(stdout) as { logistic: { accuracy: number; featureImportance: Record<string, number> } };
+    const result = JSON.parse(stdout) as {
+      logistic: {
+        accuracy: number;
+        cvAccuracy: number | null;
+        cvFolds: number;
+        featureImportance: Record<string, number>;
+      };
+    };
 
     await this.load(modelPath);
 
@@ -61,6 +68,8 @@ export class LogisticRegressionModel implements TrainableModel {
       modelPath,
       trainSamples: samples.length,
       accuracy: result.logistic.accuracy,
+      cvAccuracy: result.logistic.cvAccuracy,
+      cvFolds: result.logistic.cvFolds,
       featureImportance: result.logistic.featureImportance,
     };
   }

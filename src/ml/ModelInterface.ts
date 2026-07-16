@@ -24,7 +24,12 @@ export interface TrainedModelInfo {
   modelType: ModelType;
   modelPath: string;
   trainSamples: number;
+  /** 训练集准确率(反映拟合程度) */
   accuracy?: number;
+  /** 交叉验证/holdout 准确率(反映泛化能力) */
+  cvAccuracy?: number | null;
+  /** CV 折数(0 或 undefined 表示未做 CV;1 表示单次 holdout) */
+  cvFolds?: number;
   featureImportance?: Record<string, number>;
 }
 

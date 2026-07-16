@@ -21,6 +21,8 @@ export interface TrainResult {
   modelOut: string;
   iterations: number;
   accuracy?: number;
+  cvAccuracy?: number | null;
+  cvFolds?: number;
   featureImportance: Record<string, number>;
 }
 

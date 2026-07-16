@@ -4,6 +4,7 @@
 // Labels are derived from real user behavior signals (accept/retry/reject)
 // via BehaviorLabelExtractor when available, falling back to heuristic labels.
 
+import fs from 'node:fs';
 import { openDatabase } from '../store/schema.js';
 import { EventStore } from '../store/EventStore.js';
 import type { IDEEvent } from '../store/types.js';
@@ -30,25 +31,15 @@ export interface RealDatasetOptions {
  * real sessions without ground-truth labels.
  */
 export function heuristicLabel(features: ModelSizeFeatures): ModelSizeLabel {
-  if (
-    features.promptTokens < 8000 &&
-    features.toolCalls <= 5 &&
-    features.edits <= 2 &&
-    features.retries === 0 &&
-    features.subAgents === 0 &&
-    features.hasLoop === 0
-  ) {
-    return 'mini';
-  }
-
   const complexity =
     features.promptTokens / 1000 +
-    features.toolCalls * 5 +
+    features.toolCalls * 2 +
     features.edits * 15 +
     features.retries * 50 +
     features.hasLoop * 100 +
     features.subAgents * 30;
 
+  if (complexity <= 20) return 'mini';
   if (complexity <= 60) return 'medium';
   return 'large';
 }
@@ -75,11 +66,11 @@ export function loadRealTrainingSamples(options: RealDatasetOptions = {}): Train
  * Load sessions with metadata about label source and behavior signals.
  */
 export function loadRealTrainingSamplesWithMeta(options: RealDatasetOptions = {}): RealSampleWithMeta[] {
-  const dbPath = options.dbPath ?? './data/aea-real-copilot.db';
+  const dbPath = options.dbPath ?? './data/aea-real.db';
   const minEvents = options.minEvents ?? 3;
   const useBehaviorLabels = options.useBehaviorLabels ?? true;
 
-  if (!require('node:fs').existsSync(dbPath)) {
+  if (!fs.existsSync(dbPath)) {
     return [];
   }
 
