@@ -1,4 +1,5 @@
 import type { AgentTrace, SessionState } from '../types.js';
+import type { IDEEvent } from '../store/types.js';
 
 export interface ModelSizeFeatures {
   promptTokens: number;
@@ -95,6 +96,99 @@ export function extractModelSizeFeaturesFromTrace(trace: AgentTrace): ModelSizeF
     retryRate: 0,
     hasLoop: 0,
     subAgents: 0,
+  };
+}
+
+/**
+ * Extract ModelSizeFeatures from a chronologically ordered list of IDEEvent.
+ * This bridges the V6 Event Store / Feature Store back to the model-size
+ * classifier feature schema, enabling training on real observed sessions.
+ */
+export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSizeFeatures | null {
+  if (events.length === 0) return null;
+
+  const startEvent = events.find((e) => e.eventType === 'session_start');
+  const endEvent = events.find((e) => e.eventType === 'session_end');
+  const modelLimit = Number(startEvent?.metadata?.modelLimit ?? 256000);
+
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let contextTokens = 0;
+  let toolCalls = 0;
+  let readFiles = 0;
+  let edits = 0;
+  let retries = 0;
+  let subAgents = 0;
+  const filesRead = new Set<string>();
+  const filesEdited = new Set<string>();
+  const toolSequence: string[] = [];
+
+  for (const e of events) {
+    const m = e.metadata ?? {};
+    switch (e.eventType) {
+      case 'chat':
+        promptTokens += Number(m.tokenCount ?? m.contextToken ?? m.messageLength ?? 0);
+        break;
+      case 'completion':
+        completionTokens += Number(m.tokenCount ?? m.responseLength ?? 0);
+        break;
+      case 'tool_call': {
+        toolCalls++;
+        const toolName = String(m.toolName ?? m.tool ?? 'unknown');
+        toolSequence.push(toolName);
+        if (m.path && typeof m.path === 'string') {
+          readFiles++;
+          filesRead.add(m.path);
+        }
+        break;
+      }
+      case 'read_file':
+        readFiles++;
+        if (m.path && typeof m.path === 'string') filesRead.add(m.path);
+        break;
+      case 'edit':
+      case 'accept':
+        // V6Sink maps a successful edit to an 'accept' IDEEvent; count both
+        // as edits so real-time sessions feed the model-size feature schema.
+        edits++;
+        if (m.file && typeof m.file === 'string') filesEdited.add(m.file);
+        if (m.path && typeof m.path === 'string') filesEdited.add(m.path);
+        break;
+      case 'retry':
+        retries++;
+        break;
+      case 'terminal':
+        subAgents += Number(m.subAgents ?? 0);
+        break;
+    }
+  }
+
+  // Derive contextTokens as prompt + completion if not directly observed.
+  contextTokens = contextTokens || promptTokens + completionTokens;
+
+  const startTime = events[0]?.timestamp ?? 0;
+  const endTime = endEvent?.timestamp ?? events[events.length - 1]?.timestamp ?? startTime;
+  const elapsedMs = Math.max(0, endTime - startTime);
+
+  const readToEditRatio = edits > 0 ? readFiles / edits : readFiles;
+  const retryRate = toolCalls > 0 ? retries / toolCalls : 0;
+
+  return {
+    promptTokens,
+    completionTokens,
+    contextTokens,
+    toolCalls,
+    readFiles,
+    edits,
+    retries,
+    uniqueFilesRead: filesRead.size,
+    uniqueFilesEdited: filesEdited.size,
+    elapsedMs,
+    contextUtilization: modelLimit > 0 ? contextTokens / modelLimit : 0,
+    readToEditRatio,
+    retryRate,
+    hasLoop: detectLoop(toolSequence) ? 1 : 0,
+    subAgents,
   };
 }
 
