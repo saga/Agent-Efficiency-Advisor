@@ -2,7 +2,7 @@
 //
 // 用法:npm run train
 
-import { loadRealTrainingSamples } from '../ml/realDataset.js';
+import { loadRealTrainingSamples, loadRealTrainingSamplesWithMeta } from '../ml/realDataset.js';
 import { generateSyntheticDataset } from '../ml/dataset.js';
 import type { TrainingSample } from '../ml/dataset.js';
 import { ModelTrainer } from '../ml/ModelTrainer.js';
@@ -11,7 +11,11 @@ import { EventStore } from '../store/EventStore.js';
 import { openDatabase } from '../store/schema.js';
 import { encodeAutoModeLabel } from '../ml/features.js';
 
-const REAL_DB_SOURCES = ['./data/aea-real.db'];
+const REAL_DB_SOURCES = [
+  './data/aea-real-copilot.db',
+  './data/aea-session-store.db',
+  './data/aea-transcripts.db',
+];
 
 function summarizeLabels(samples: TrainingSample[]): Record<string, number> {
   const byLabel = new Map<string, number>();
@@ -51,11 +55,17 @@ function loadAutoModeSignals(dbPath: string): Map<string, AutoModeSignal> {
 }
 
 async function main() {
-  // 1. 收集真实数据
+  // 1. 收集真实数据（使用行为标签）
   const sourceSamples = new Map<string, TrainingSample[]>();
+  const behaviorStats = { behavior: 0, heuristic: 0 };
+
   for (const dbPath of REAL_DB_SOURCES) {
-    const samples = loadRealTrainingSamples({ dbPath });
+    const samples = loadRealTrainingSamplesWithMeta({ dbPath, useBehaviorLabels: true });
     if (samples.length > 0) {
+      for (const s of samples) {
+        if (s.labelSource === 'behavior') behaviorStats.behavior++;
+        else behaviorStats.heuristic++;
+      }
       sourceSamples.set(dbPath, samples);
     }
   }
@@ -72,7 +82,7 @@ async function main() {
   let samples: TrainingSample[] = realSamples;
 
   console.log('═══════════════════════════════════════════════════════════');
-  console.log('  Multi-Model Training');
+  console.log('  Multi-Model Training (Behavior Labels + Stacking)');
   console.log('═══════════════════════════════════════════════════════════\n');
 
   console.log(`Found ${realSamples.length} real session(s) across ${sourceSamples.size} source(s).`);
@@ -81,6 +91,7 @@ async function main() {
   }
   if (realSamples.length > 0) {
     console.log('Real label distribution:', summarizeLabels(realSamples));
+    console.log(`Label sources: behavior=${behaviorStats.behavior}, heuristic=${behaviorStats.heuristic}`);
   }
 
   // 2. 加载 autoModeResolution 信号

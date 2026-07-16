@@ -108,11 +108,12 @@ export class KnnModel implements TrainableModel {
   }
 
   private computeProbabilities(xNorm: number[], excludeIndex = -1): number[] {
-    // 计算到所有参考点的距离
+    // Cosine distance is more robust for features with different magnitudes
+    // (promptTokens vs retryRate vs hasLoop have very different scales).
     const distances: Array<{ dist: number; label: number }> = [];
     for (let i = 0; i < this.referenceX.length; i++) {
       if (i === excludeIndex) continue;
-      const dist = this.euclideanDistance(xNorm, this.referenceX[i]);
+      const dist = this.cosineDistance(xNorm, this.referenceX[i]);
       distances.push({ dist: dist || 1e-10, label: this.referenceY[i] });
     }
 
@@ -120,23 +121,31 @@ export class KnnModel implements TrainableModel {
     distances.sort((a, b) => a.dist - b.dist);
     const knn = distances.slice(0, Math.min(this.k, distances.length));
 
-    // 距离倒数加权投票
+    // Exponential distance weighting: exp(-d²/σ²) is much more stable than 1/d.
+    // σ is set to the median distance of the K nearest neighbors.
+    const sortedDists = knn.map((n) => n.dist).sort((a, b) => a - b);
+    const sigma = sortedDists[Math.floor(sortedDists.length / 2)] || 1;
+    const sigmaSq = sigma * sigma;
+
     const votes = Array(NUM_CLASSES).fill(0);
     for (const neighbor of knn) {
-      votes[neighbor.label] += 1 / neighbor.dist;
+      votes[neighbor.label] += Math.exp(-(neighbor.dist * neighbor.dist) / sigmaSq);
     }
 
     const sum = votes.reduce((a, b) => a + b, 0);
     return votes.map((v) => (sum > 0 ? v / sum : 1 / NUM_CLASSES));
   }
 
-  private euclideanDistance(a: number[], b: number[]): number {
-    let sum = 0;
+  private cosineDistance(a: number[], b: number[]): number {
+    let dot = 0, normA = 0, normB = 0;
     for (let i = 0; i < a.length; i++) {
-      const diff = a[i] - b[i];
-      sum += diff * diff;
+      dot += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
     }
-    return Math.sqrt(sum);
+    const denom = Math.sqrt(normA) * Math.sqrt(normB);
+    if (denom === 0) return 1; // maximum distance for zero vectors
+    return 1 - dot / denom;
   }
 
   private computeNormalization(X: number[][]): void {

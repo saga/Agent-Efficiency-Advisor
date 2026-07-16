@@ -17,6 +17,7 @@ import { NaiveBayesModel } from './NaiveBayesModel.js';
 import { KnnModel } from './KnnModel.js';
 import { ConformalPredictor } from './ConformalPredictor.js';
 import { LabelPropagation, type AutoModeSignal } from './LabelPropagation.js';
+import { StackingMetaLearner } from './StackingMetaLearner.js';
 import type { ModelSizeFeatures } from './features.js';
 
 export interface MultiModelTrainResult {
@@ -103,6 +104,15 @@ export class ModelTrainer {
       console.error(`  ✗ CatBoost failed: ${err}`);
     }
 
+    // 5. 训练 Stacking Meta Learner（在线 LR + KNN + NB → Meta LR）
+    try {
+      const stackingInfo = await this.trainStacking(samples, outDir);
+      trainResults.push(stackingInfo);
+      console.log(`  ✓ ${stackingInfo.modelName}: accuracy=${(stackingInfo.accuracy ?? 0).toFixed(3)}, samples=${stackingInfo.trainSamples}`);
+    } catch (err) {
+      console.error(`  ✗ Stacking Meta Learner failed: ${err}`);
+    }
+
     return {
       models: trainResults,
       totalSamples: samples.length,
@@ -151,6 +161,20 @@ export class ModelTrainer {
       trainSamples: samples.length,
       featureImportance: result.featureImportance,
     };
+  }
+
+  /**
+   * 训练 Stacking Meta Learner（Online LR + KNN + NB → Meta LR）。
+   * Base models 使用交叉验证生成 out-of-fold 预测作为 meta features。
+   */
+  private async trainStacking(
+    samples: TrainingSample[],
+    outDir: string,
+  ): Promise<TrainedModelInfo> {
+    const stacker = new StackingMetaLearner(outDir);
+    const modelPath = path.join(outDir, 'stacking-model.json');
+    const info = await stacker.train(samples, modelPath);
+    return info;
   }
 }
 

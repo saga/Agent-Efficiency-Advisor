@@ -1,17 +1,16 @@
 // realDataset — load observed sessions from AEA SQLite and produce TrainingSample.
 //
-// Bridges the V6 Event Store to the model-size classifier. Labels are derived
-// from a heuristic (same logic as the rule-based Advisor) because real Copilot
-// sessions do not ship with ground-truth model-size labels. As outcome signals
-// accumulate in data/ml/feedback.csv, this module can be extended to read them.
+// Bridges the V6 Event Store to the model-size classifier.
+// Labels are derived from real user behavior signals (accept/retry/reject)
+// via BehaviorLabelExtractor when available, falling back to heuristic labels.
 
-import Database from 'better-sqlite3';
 import { openDatabase } from '../store/schema.js';
 import { EventStore } from '../store/EventStore.js';
 import type { IDEEvent } from '../store/types.js';
 import type { ModelSizeFeatures, ModelSizeLabel } from './features.js';
 import { extractModelSizeFeaturesFromEvents } from './features.js';
 import type { TrainingSample } from './dataset.js';
+import { extractBehaviorLabel } from './BehaviorLabelExtractor.js';
 
 export interface RealDatasetOptions {
   /**
@@ -21,6 +20,8 @@ export interface RealDatasetOptions {
   dbPath?: string;
   /** Minimum events per session to be included. */
   minEvents?: number;
+  /** If true, use behavior-based labels; if false, use heuristic only. */
+  useBehaviorLabels?: boolean;
 }
 
 /**
@@ -52,13 +53,31 @@ export function heuristicLabel(features: ModelSizeFeatures): ModelSizeLabel {
   return 'large';
 }
 
+export interface RealSampleWithMeta extends TrainingSample {
+  labelSource: 'behavior' | 'heuristic';
+  behaviorSignals?: {
+    acceptCount: number;
+    retryCount: number;
+    rewardNormalized: number;
+  };
+}
+
 /**
  * Load sessions from an AEA SQLite DB and convert each to a TrainingSample.
- * Returns null feature rows for sessions that cannot be converted.
+ * Uses behavior-based labels when accept/retry events are present, otherwise
+ * falls back to the heuristic label.
  */
 export function loadRealTrainingSamples(options: RealDatasetOptions = {}): TrainingSample[] {
-  const dbPath = options.dbPath ?? './data/aea-real.db';
+  return loadRealTrainingSamplesWithMeta(options);
+}
+
+/**
+ * Load sessions with metadata about label source and behavior signals.
+ */
+export function loadRealTrainingSamplesWithMeta(options: RealDatasetOptions = {}): RealSampleWithMeta[] {
+  const dbPath = options.dbPath ?? './data/aea-real-copilot.db';
   const minEvents = options.minEvents ?? 3;
+  const useBehaviorLabels = options.useBehaviorLabels ?? true;
 
   if (!require('node:fs').existsSync(dbPath)) {
     return [];
@@ -66,7 +85,7 @@ export function loadRealTrainingSamples(options: RealDatasetOptions = {}): Train
 
   const db = openDatabase(dbPath);
   const eventStore = new EventStore(db);
-  const samples: TrainingSample[] = [];
+  const samples: RealSampleWithMeta[] = [];
 
   for (const sessionId of eventStore.getSessionIds()) {
     const events = eventStore.getBySession(sessionId);
@@ -76,8 +95,6 @@ export function loadRealTrainingSamples(options: RealDatasetOptions = {}): Train
     if (!features) continue;
 
     // Skip degenerate sessions with no meaningful activity.
-    // 真实 chatSessions 数据可能只有 chat/completion 事件(无 tool_call/edit),
-    // 所以只要 promptTokens 或 completionTokens > 0 就保留。
     if (
       features.promptTokens === 0 &&
       features.completionTokens === 0 &&
@@ -87,10 +104,29 @@ export function loadRealTrainingSamples(options: RealDatasetOptions = {}): Train
       continue;
     }
 
+    let label: ModelSizeLabel;
+    let labelSource: 'behavior' | 'heuristic' = 'heuristic';
+    let behaviorSignals: RealSampleWithMeta['behaviorSignals'];
+
+    if (useBehaviorLabels) {
+      const signals = extractBehaviorLabel(events, features);
+      label = signals.label;
+      labelSource = signals.labelSource;
+      behaviorSignals = {
+        acceptCount: signals.acceptCount,
+        retryCount: signals.retryCount,
+        rewardNormalized: signals.rewardNormalized,
+      };
+    } else {
+      label = heuristicLabel(features);
+    }
+
     samples.push({
       sessionId,
       features,
-      label: heuristicLabel(features),
+      label,
+      labelSource,
+      behaviorSignals,
     });
   }
 

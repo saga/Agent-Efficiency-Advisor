@@ -17,7 +17,8 @@
     "demo:observatory": "tsx src/cli/observatory.ts",
     "demo:real-copilot": "tsx scripts/run-real-copilot-logs.ts",
     "demo:session-store": "tsx scripts/run-copilot-session-store.ts",
-    "demo:workspace-scan": "tsx scripts/run-copilot-workspace-scan.ts"
+    "demo:workspace-scan": "tsx scripts/run-copilot-workspace-scan.ts",
+    "demo:transcripts": "tsx scripts/run-transcript-import.ts"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

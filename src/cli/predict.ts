@@ -6,6 +6,7 @@ import { CatBoostModel } from '../ml/CatBoostModel.js';
 import { LogisticRegressionModel } from '../ml/LogisticRegressionModel.js';
 import { NaiveBayesModel } from '../ml/NaiveBayesModel.js';
 import { KnnModel } from '../ml/KnnModel.js';
+import { StackingMetaLearner } from '../ml/StackingMetaLearner.js';
 import type { ModelPrediction, TrainableModel } from '../ml/ModelInterface.js';
 import type { ModelSizeFeatures } from '../ml/features.js';
 
@@ -106,6 +107,7 @@ async function main() {
     { name: 'Naive Bayes', model: new NaiveBayesModel(), path: './data/ml/naivebayes-model.json' },
     { name: 'KNN', model: new KnnModel(), path: './data/ml/knn-model.json' },
     { name: 'CatBoost', model: new CatBoostAdapter('./data/ml/catboost-model.cbm'), path: './data/ml/catboost-model.cbm' },
+    { name: 'Stacking Meta', model: new StackingMetaLearner('./data/ml'), path: './data/ml/stacking-model.json' },
   ];
 
   // 加载已训练的模型(跳过不存在的)
