@@ -178,8 +178,9 @@ src/
   cli.ts                # real-time observability demo
   cli-train.ts          # CatBoost training demo
   cli-predict.ts        # CatBoost prediction demo
-  cli-store.ts          # V6/V7 Event Store + Feature Store + LabelStore demo
-  cli-v6.ts             # V6/V7 full 5-layer Observatory demo
+  cli-store.ts          # Event Store + Feature Store + LabelStore demo
+  cli-observatory.ts    # full Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
+  cli-trust.ts          # Trustworthy Decision Engine demo
 ```
 
 ## Quick start
@@ -197,11 +198,9 @@ npm run train                   # train CatBoost model-size classifier (uses .ve
 npm run predict                 # predict with trained model (uses .venv)
 
 npm run demo                    # real-time observability demo (rules)
-npm run demo:v4                 # real-time recommendation + shadow evaluation + feedback
-npm run demo:v5                 # Agent Runtime Intelligence (state machine + event sourcing + plugins)
 npm run demo:trust              # Trustworthy Decision Engine (calibration + fusion + explainability + evaluation)
 npm run demo:store              # SQLite Event Store + Feature Store (event pipeline + behavior features)
-npm run demo:v6                 # Full 6-layer Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
+npm run demo:observatory        # full Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
 npm run demo:real-copilot       # ingest real VSCode Copilot Agent Debug Logs (macOS default path)
 npm run demo:session-store      # ingest real VSCode Copilot Chat session-state SQLite (high-level chat semantics)
 ```

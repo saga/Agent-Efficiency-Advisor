@@ -12,11 +12,9 @@
     "train": "tsx src/cli-train.ts",
     "predict": "tsx src/cli-predict.ts",
     "demo": "tsx src/cli.ts",
-    "demo:v4": "tsx src/cli-v4.ts",
-    "demo:v5": "tsx src/cli-v5.ts",
     "demo:trust": "tsx src/cli-trust.ts",
     "demo:store": "tsx src/cli-store.ts",
-    "demo:v6": "tsx src/cli-v6.ts",
+    "demo:observatory": "tsx src/cli-observatory.ts",
     "demo:real-copilot": "tsx scripts/run-real-copilot-logs.ts",
     "demo:session-store": "tsx scripts/run-copilot-session-store.ts"
   },
