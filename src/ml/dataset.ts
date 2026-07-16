@@ -49,6 +49,8 @@ function generateFeaturesForLabel(label: ModelSizeLabel): ModelSizeFeatures {
       retryRate: 0,
       hasLoop: 0,
       subAgents: 0,
+      autoModePredictedLabel: 1,
+      autoModeConfidence: 0.7 * jitter(),
     };
   }
 
@@ -69,6 +71,8 @@ function generateFeaturesForLabel(label: ModelSizeLabel): ModelSizeFeatures {
       retryRate: 0.05,
       hasLoop: Math.random() > 0.9 ? 1 : 0,
       subAgents: 0,
+      autoModePredictedLabel: Math.random() > 0.5 ? 1 : 2,
+      autoModeConfidence: 0.5 * jitter(),
     };
   }
 
@@ -88,6 +92,8 @@ function generateFeaturesForLabel(label: ModelSizeLabel): ModelSizeFeatures {
     retryRate: 0.15,
     hasLoop: Math.random() > 0.5 ? 1 : 0,
     subAgents: Math.round(2 * jitter()),
+    autoModePredictedLabel: 2,
+    autoModeConfidence: 0.85 * jitter(),
   };
 }
 

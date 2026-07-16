@@ -1,5 +1,5 @@
-import { CatBoostModel } from './ml/CatBoostModel.js';
-import type { ModelSizeFeatures } from './ml/features.js';
+import { CatBoostModel } from '../ml/CatBoostModel.js';
+import type { ModelSizeFeatures } from '../ml/features.js';
 
 const samples: ModelSizeFeatures[] = [
   // mini-like
@@ -19,6 +19,8 @@ const samples: ModelSizeFeatures[] = [
     retryRate: 0,
     hasLoop: 0,
     subAgents: 0,
+    autoModePredictedLabel: 1,
+    autoModeConfidence: 0.7,
   },
   // large-like
   {
@@ -37,6 +39,8 @@ const samples: ModelSizeFeatures[] = [
     retryRate: 0.18,
     hasLoop: 1,
     subAgents: 3,
+    autoModePredictedLabel: 2,
+    autoModeConfidence: 0.85,
   },
 ];
 

@@ -7,3 +7,4 @@ export * from './FeatureStore.js';
 export * from './FeaturePipeline.js';
 export * from './LabelStore.js';
 export * from './EventRegistry.js';
+export * from './RetentionPolicy.js';

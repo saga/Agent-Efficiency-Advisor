@@ -2,15 +2,15 @@
 // Shows: synthetic data → calibration → evaluation → decision fusion →
 // explainability → counterfactual → shadow sampling → drift → scorecard.
 
-import { calibrateTemperature } from './v5/trust/ConfidenceCalibration.js';
-import { fusePredictions } from './v5/trust/DecisionFusion.js';
-import { DecisionEngine } from './v5/trust/DecisionEngine.js';
-import { evaluate, buildScorecard } from './v5/trust/Evaluation.js';
-import { permutationImportance } from './v5/trust/FeatureImportance.js';
-import { decideSample } from './v5/trust/SamplingStrategy.js';
-import { detectModelDrift, detectConceptDrift } from './v5/trust/DriftDetector.js';
-import { renderTrustDecision, renderScorecard, renderEvaluationMetrics, renderDrift } from './v5/trust/TrustRenderer.js';
-import type { EvaluationSample, ModelSize } from './v5/trust/types.js';
+import { calibrateTemperature } from '../v5/trust/ConfidenceCalibration.js';
+import { fusePredictions } from '../v5/trust/DecisionFusion.js';
+import { DecisionEngine } from '../v5/trust/DecisionEngine.js';
+import { evaluate, buildScorecard } from '../v5/trust/Evaluation.js';
+import { permutationImportance } from '../v5/trust/FeatureImportance.js';
+import { decideSample } from '../v5/trust/SamplingStrategy.js';
+import { detectModelDrift, detectConceptDrift } from '../v5/trust/DriftDetector.js';
+import { renderTrustDecision, renderScorecard, renderEvaluationMetrics, renderDrift } from '../v5/trust/TrustRenderer.js';
+import type { EvaluationSample, ModelSize } from '../v5/trust/types.js';
 
 const MODELS: ModelSize[] = ['mini', 'medium', 'large'];
 

@@ -93,6 +93,17 @@ export class FeatureStore {
     return this.db.prepare(`SELECT session_id, ${cols} FROM session_feature_view ORDER BY session_id`).all() as any[];
   }
 
+  /** 删除超过指定天数的旧特征 */
+  prune(olderThanDays: number): number {
+    const cutoff = Date.now() - olderThanDays * 86400000;
+    let total = 0;
+    for (const domain of ['workspace', 'session', 'prompt', 'tool', 'behavior']) {
+      const result = this.db.prepare(`DELETE FROM feature_${domain} WHERE computed_at < ?`).run(cutoff);
+      total += Number(result.changes);
+    }
+    return total;
+  }
+
   /**
    * v7.md #4: 同步更新 session_feature_view。
    * 合并 session + behavior 特征到真实列。

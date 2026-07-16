@@ -1,11 +1,12 @@
-import { CatBoostTrainer } from './ml/CatBoostTrainer.js';
-import { loadRealTrainingSamples } from './ml/realDataset.js';
-import { generateSyntheticDataset } from './ml/dataset.js';
-import type { TrainingSample } from './ml/dataset.js';
+import { CatBoostTrainer } from '../ml/CatBoostTrainer.js';
+import { loadRealTrainingSamples } from '../ml/realDataset.js';
+import { generateSyntheticDataset } from '../ml/dataset.js';
+import type { TrainingSample } from '../ml/dataset.js';
 
+// 所有真实数据源 demo 现在统一写入 aea-real.db,
+// 训练时只读这一个数据库即可。
 const REAL_DB_SOURCES = [
-  './data/aea-real-copilot.db',
-  './data/aea-session-store.db',
+  './data/aea-real.db',
 ];
 
 function summarizeLabels(samples: TrainingSample[]): Record<string, number> {

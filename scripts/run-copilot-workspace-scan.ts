@@ -22,7 +22,7 @@ import { FeaturePipeline } from '../src/store/FeaturePipeline.js';
 import { AnalyticsEngine } from '../src/ml/AnalyticsEngine.js';
 import { EmbeddingStore } from '../src/embedding/EmbeddingStore.js';
 
-const OUT_DB = './data/aea-workspace-scan.db';
+const OUT_DB = './data/aea-real.db';
 
 function main() {
   rmSync(OUT_DB, { force: true });

@@ -120,4 +120,97 @@ describe('V6Sink', () => {
     expect(sessionFeat!.features.acceptCount).toBe(1);
     expect(sessionFeat!.features.completionCount).toBe(1);
   });
+
+  // 测试 run_test 工具调用转换
+  it('maps run_test tool_call to run_test IDEEvent', () => {
+    const sink = new V6Sink(ctx.eventStore, ctx.pipeline);
+
+    sink.ingest({
+      type: 'tool_call',
+      sessionId: 's1',
+      timestamp: 1000,
+      payload: { tool: 'run_test', args: { command: 'npm test' }, success: true },
+    });
+
+    const events = ctx.eventStore.getBySession('s1');
+    expect(events).toHaveLength(1);
+    expect(events[0].eventType).toBe('run_test');
+    expect(events[0].metadata.passed).toBe(true);
+    expect(events[0].metadata.toolName).toBe('run_test');
+  });
+
+  // 测试 terminal 工具调用转换
+  it('maps terminal tool_call to terminal IDEEvent', () => {
+    const sink = new V6Sink(ctx.eventStore, ctx.pipeline);
+
+    sink.ingest({
+      type: 'tool_call',
+      sessionId: 's1',
+      timestamp: 1000,
+      payload: { tool: 'terminal', args: { command: 'ls -la' }, success: true },
+    });
+
+    const events = ctx.eventStore.getBySession('s1');
+    expect(events).toHaveLength(1);
+    expect(events[0].eventType).toBe('terminal');
+    expect(events[0].metadata.toolName).toBe('terminal');
+  });
+
+  // 测试 commit 工具调用转换
+  it('maps commit tool_call to commit IDEEvent', () => {
+    const sink = new V6Sink(ctx.eventStore, ctx.pipeline);
+
+    sink.ingest({
+      type: 'tool_call',
+      sessionId: 's1',
+      timestamp: 1000,
+      payload: { tool: 'commit', args: { branch: 'feature/x' }, success: true },
+    });
+
+    const events = ctx.eventStore.getBySession('s1');
+    expect(events).toHaveLength(1);
+    expect(events[0].eventType).toBe('commit');
+    expect(events[0].metadata.toolName).toBe('commit');
+    expect(events[0].metadata.branch).toBe('feature/x');
+  });
+
+  // 测试未知工具调用回退为通用 tool_call 事件
+  it('maps unknown tool_call to generic tool_call IDEEvent', () => {
+    const sink = new V6Sink(ctx.eventStore, ctx.pipeline);
+
+    sink.ingest({
+      type: 'tool_call',
+      sessionId: 's1',
+      timestamp: 1000,
+      payload: { tool: 'custom_tool', args: {}, success: true, durationMs: 200 },
+    });
+
+    const events = ctx.eventStore.getBySession('s1');
+    expect(events).toHaveLength(1);
+    expect(events[0].eventType).toBe('tool_call');
+    expect(events[0].metadata.toolName).toBe('custom_tool');
+    expect(events[0].metadata.durationMs).toBe(200);
+  });
+
+  // 测试 flushSession 手动触发特征计算
+  it('flushSession manually triggers feature computation', () => {
+    const sink = new V6Sink(ctx.eventStore, ctx.pipeline);
+
+    // 写入最小会话,但不发送 session_end
+    sink.ingest({ type: 'session_start', sessionId: 's1', timestamp: 1, payload: {} });
+    sink.ingest({ type: 'llm_request', sessionId: 's1', timestamp: 2, payload: { promptTokens: 100, completionTokens: 50 } });
+    sink.ingest({ type: 'edit', sessionId: 's1', timestamp: 3, payload: { file: 'f.ts', diffLines: 1, success: true } });
+
+    // 此时还未计算 session 特征
+    let sessionFeat = ctx.featureStore.read('session', 's1');
+    expect(sessionFeat).toBeUndefined();
+
+    // 手动 flush 触发计算
+    sink.flushSession('s1');
+
+    sessionFeat = ctx.featureStore.read('session', 's1');
+    expect(sessionFeat).toBeDefined();
+    expect(sessionFeat!.features.acceptCount).toBe(1);
+    expect(sessionFeat!.features.completionCount).toBe(1);
+  });
 });

@@ -21,4 +21,8 @@ export interface AnalyticsSummary {
   topFailurePattern: string;
   // Context ROI
   contextROI: { feature: string; contribution: number }[];
+  // V5.2 Trust Engine 接入：置信度校准后的值（P3-7）
+  calibratedConfidence?: number;
+  // V5.2 Trust Engine 接入：基于 permutation importance 的 top 特征（P3-7）
+  shapTopFeatures?: Array<{ feature: string; importance: number }>;
 }

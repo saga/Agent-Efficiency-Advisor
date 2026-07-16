@@ -57,7 +57,7 @@ export function heuristicLabel(features: ModelSizeFeatures): ModelSizeLabel {
  * Returns null feature rows for sessions that cannot be converted.
  */
 export function loadRealTrainingSamples(options: RealDatasetOptions = {}): TrainingSample[] {
-  const dbPath = options.dbPath ?? './data/aea-real-copilot.db';
+  const dbPath = options.dbPath ?? './data/aea-real.db';
   const minEvents = options.minEvents ?? 3;
 
   if (!require('node:fs').existsSync(dbPath)) {

@@ -64,6 +64,13 @@ export class EventStore {
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number };
     return row.n;
   }
+
+  /** 删除超过指定天数的旧事件 */
+  prune(olderThanDays: number): number {
+    const cutoff = Date.now() - olderThanDays * 86400000;
+    const result = this.db.prepare('DELETE FROM events WHERE timestamp < ?').run(cutoff);
+    return Number(result.changes);
+  }
 }
 
 function rowToEvent(row: any): IDEEvent {

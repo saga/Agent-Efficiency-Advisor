@@ -66,25 +66,35 @@ Event → Entity → Feature → Embedding → ML → Graph → LLM
 5. **Three Registries** (`FeatureRegistry` / `EventRegistry` / `AnalyzerRegistry`): 补齐元数据体系，支持插件化扩展。
 6. **Feature Materialized View** (`session_feature_view`): 保留 JSON Blob 的同时，为高频分析字段建立真实列，可直接用 SQL/DuckDB/CatBoost 查询。
 7. **LabelStore 独立**: Label 与 Feature 生命周期解耦，Training Matrix 由 `LabelStore` 组装。
+8. **V7.1 Workspace Data Sources** (`src/realtime/parsers/`): 新增 Copilot Workspace 数据源解析器（`ModelsMetadataParser` / `ChatSessionsParser` / `SystemPromptToolsParser` / `ChatEditingSessionsParser` / `TranscriptsParser` / `CopilotExtLogParser`），统一接入 `CopilotWorkspaceScanner`。其中 `CopilotExtLogParser` 提取 `autoModeResolution` 信号，用于判定 auto-mode 下的接受/拒绝/修改结果。
 
 ## Project structure
 
 ```
 src/
   realtime/
-    CopilotSource.ts        # chokidar + tail-file log source
-    MockLogSource.ts        # mock events for demo
-    TailManager.ts          # manage per-file tail instances
-    EventBus.ts             # decouple parser from consumers
-    LogParser.ts            # Copilot/generic JSONL parser
-    CopilotSessionStore.ts  # read VSCode Copilot Chat session-state SQLite
-    SessionState.ts         # mutable session state updates
-    SessionManager.ts       # session registry
-    V6Sink.ts               # bridge: AgentLogEvent → IDEEvent → V6 SQLite
+    CopilotSource.ts            # chokidar + tail-file log source
+    MockLogSource.ts            # mock events for demo
+    TailManager.ts              # manage per-file tail instances
+    EventBus.ts                 # decouple parser from consumers
+    LogParser.ts                # Copilot/generic JSONL parser
+    CopilotSessionStore.ts      # read VSCode Copilot Chat session-state SQLite
+    CopilotWorkspaceScanner.ts  # V7.1: scan Copilot Workspace data sources (models/chatSessions/tools/editingSessions/transcripts/extLogs/autoModeResolution)
+    SessionState.ts             # mutable session state updates
+    SessionManager.ts           # session registry
+    V6Sink.ts                   # bridge: AgentLogEvent → IDEEvent → V6 SQLite
+    parsers/                    # V7.1: Copilot Workspace data source parsers
+      ModelsMetadataParser.ts       # models.json parser
+      ChatSessionsParser.ts         # chatSessions parser
+      SystemPromptToolsParser.ts    # system prompt + tools parser
+      ChatEditingSessionsParser.ts  # editingSessions parser
+      TranscriptsParser.ts          # transcripts parser
+      CopilotExtLogParser.ts        # extLogs parser (incl. autoModeResolution signal)
   rules/
     Rule.ts             # base rule + alert helper
     RuleEngine.ts       # evaluate all rules
     ruleRegistry.ts     # default rules
+    config.ts           # V7: rule threshold configuration (env override via AEA_RULE_* prefix)
     ContextTooLargeRule.ts
     ReadFileStormRule.ts
     ToolLoopRule.ts
@@ -175,12 +185,13 @@ src/
     evaluator.ts
     outcomeSignals.ts
   types.ts              # shared types
-  cli.ts                # real-time observability demo
-  cli-train.ts          # CatBoost training demo
-  cli-predict.ts        # CatBoost prediction demo
-  cli-store.ts          # Event Store + Feature Store + LabelStore demo
-  cli-observatory.ts    # full Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
-  cli-trust.ts          # Trustworthy Decision Engine demo
+  cli/                  # CLI entry points (moved from root cli-*.ts into src/cli/)
+    index.ts            # real-time observability demo
+    train.ts            # CatBoost training demo
+    predict.ts          # CatBoost prediction demo
+    store.ts            # Event Store + Feature Store + LabelStore demo
+    observatory.ts      # full Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
+    trust.ts            # Trustworthy Decision Engine demo
 ```
 
 ## Quick start
@@ -203,6 +214,7 @@ npm run demo:store              # SQLite Event Store + Feature Store (event pipe
 npm run demo:observatory        # full Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
 npm run demo:real-copilot       # ingest real VSCode Copilot Agent Debug Logs (macOS default path)
 npm run demo:session-store      # ingest real VSCode Copilot Chat session-state SQLite (high-level chat semantics)
+npm run demo:workspace-scan     # V7.1: scan Copilot Workspace data sources (models.json/chatSessions/tools/editingSessions/transcripts/extLogs/autoModeResolution)
 ```
 
 ## Default rules
@@ -230,6 +242,7 @@ npm run demo:session-store      # ingest real VSCode Copilot Chat session-state 
 | V5.2 | Trustworthy Decision Engine (calibration + fusion + explainability + evaluation) | Done |
 | V6 | AI Development Observatory (Event + Feature + Embedding + ML + LLM + Session Graph) | Done |
 | V7 | Architecture Refactoring: Entity Layer + Split Feature Pipeline + Embedding/Analyzer Plugin + Materialized View + Registries | Done |
+| V7.1 | Workspace Data Sources (models.json/chatSessions/tools/editingSessions/transcripts/extLogs/autoModeResolution) | Done |
 
 ## Design constraints
 
@@ -237,3 +250,4 @@ npm run demo:session-store      # ingest real VSCode Copilot Chat session-state 
 - Do not force dual-model running in the normal workflow.
 - Keep evaluation independent, asynchronous, and mostly LLM-free.
 - Rules and parsers are pluginable; new agent support only needs a parser.
+- Rule thresholds are configurable via environment variables (`AEA_RULE_*` prefix).

@@ -17,7 +17,7 @@ import { computeHealthScore } from '../src/metrics/HealthScorer.js';
 import type { Alert } from '../src/types.js';
 
 const LOG_DIR = process.env.COPILOT_LOG_DIR ?? '/Users/saga/Library/Application Support/Code/User/workspaceStorage';
-const DB_PATH = process.env.AEA_REAL_COPILOT_DB ?? './data/aea-real-copilot.db';
+const DB_PATH = process.env.AEA_REAL_DB ?? './data/aea-real.db';
 
 function scan(dir: string, depth = 0): string[] {
   const found: string[] = [];

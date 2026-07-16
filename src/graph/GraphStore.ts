@@ -105,6 +105,15 @@ export class GraphStore {
     return rows.map(rowToNode);
   }
 
+  /** 删除超过指定天数的旧图节点和边 */
+  prune(olderThanDays: number): number {
+    const cutoff = Date.now() - olderThanDays * 86400000;
+    // 先删边,再删节点(外键约束)
+    const edgesResult = this.db.prepare('DELETE FROM graph_edges WHERE timestamp < ?').run(cutoff);
+    const nodesResult = this.db.prepare('DELETE FROM graph_nodes WHERE created_at < ?').run(cutoff);
+    return Number(edgesResult.changes) + Number(nodesResult.changes);
+  }
+
   count(): { nodes: number; edges: number } {
     const n = this.db.prepare('SELECT COUNT(*) AS n FROM graph_nodes').get() as { n: number };
     const e = this.db.prepare('SELECT COUNT(*) AS n FROM graph_edges').get() as { n: number };

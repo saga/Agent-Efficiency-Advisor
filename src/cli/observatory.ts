@@ -5,20 +5,20 @@
 // Uses pi-ai (@earendil-works/pi-ai) as the LLM framework.
 
 import { rmSync } from 'node:fs';
-import { openDatabase } from './store/schema.js';
-import { EventStore } from './store/EventStore.js';
-import { FeatureRegistry } from './store/FeatureRegistry.js';
-import { FeatureStore } from './store/FeatureStore.js';
-import { FeaturePipeline } from './store/FeaturePipeline.js';
-import { EmbeddingStore } from './embedding/EmbeddingStore.js';
-import { EmbeddingPipeline } from './embedding/EmbeddingPipeline.js';
-import { AnalyticsEngine } from './ml/AnalyticsEngine.js';
-import { InsightsEngine } from './llm/InsightsEngine.js';
-import { GraphStore } from './graph/GraphStore.js';
-import { GraphBuilder } from './graph/GraphBuilder.js';
-import { GraphQueries } from './graph/GraphQueries.js';
-import { EntityBuilder } from './entity/EntityBuilder.js';
-import type { IDEEvent } from './store/types.js';
+import { openDatabase } from '../store/schema.js';
+import { EventStore } from '../store/EventStore.js';
+import { FeatureRegistry } from '../store/FeatureRegistry.js';
+import { FeatureStore } from '../store/FeatureStore.js';
+import { FeaturePipeline } from '../store/FeaturePipeline.js';
+import { EmbeddingStore } from '../embedding/EmbeddingStore.js';
+import { EmbeddingPipeline } from '../embedding/EmbeddingPipeline.js';
+import { AnalyticsEngine } from '../ml/AnalyticsEngine.js';
+import { InsightsEngine } from '../llm/InsightsEngine.js';
+import { GraphStore } from '../graph/GraphStore.js';
+import { GraphBuilder } from '../graph/GraphBuilder.js';
+import { GraphQueries } from '../graph/GraphQueries.js';
+import { EntityBuilder } from '../entity/EntityBuilder.js';
+import type { IDEEvent } from '../store/types.js';
 
 const DB_PATH = './data/aea-v6.db';
 

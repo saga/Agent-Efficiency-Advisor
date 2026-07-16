@@ -17,6 +17,10 @@ export interface ModelSizeFeatures {
   retryRate: number;
   hasLoop: number;
   subAgents: number;
+  /** Copilot 内部 ML 预测的难度标签(0=unknown, 1=no_reasoning, 2=needs_reasoning) */
+  autoModePredictedLabel: number;
+  /** Copilot 内部 ML 预测的置信度(0-1) */
+  autoModeConfidence: number;
 }
 
 export type ModelSizeLabel = 'mini' | 'medium' | 'large';
@@ -49,7 +53,17 @@ export const FEATURE_COLUMNS: (keyof ModelSizeFeatures)[] = [
   'retryRate',
   'hasLoop',
   'subAgents',
+  'autoModePredictedLabel',
+  'autoModeConfidence',
 ];
+
+/** Copilot autoMode predictedLabel 字符串 → 数值编码 */
+export function encodeAutoModeLabel(label: string | undefined): number {
+  if (!label) return 0;
+  if (label === 'no_reasoning') return 1;
+  if (label === 'needs_reasoning') return 2;
+  return 0;
+}
 
 export function extractModelSizeFeatures(state: SessionState): ModelSizeFeatures {
   const readToEditRatio = state.edits > 0 ? state.readFiles / state.edits : state.readFiles;
@@ -72,6 +86,8 @@ export function extractModelSizeFeatures(state: SessionState): ModelSizeFeatures
     retryRate,
     hasLoop,
     subAgents: state.subAgents,
+    autoModePredictedLabel: 0,
+    autoModeConfidence: 0,
   };
 }
 
@@ -96,6 +112,8 @@ export function extractModelSizeFeaturesFromTrace(trace: AgentTrace): ModelSizeF
     retryRate: 0,
     hasLoop: 0,
     subAgents: 0,
+    autoModePredictedLabel: 0,
+    autoModeConfidence: 0,
   };
 }
 
@@ -119,6 +137,8 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
   let edits = 0;
   let retries = 0;
   let subAgents = 0;
+  let autoModePredictedLabel = 0;
+  let autoModeConfidence = 0;
   const filesRead = new Set<string>();
   const filesEdited = new Set<string>();
   const toolSequence: string[] = [];
@@ -131,6 +151,13 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
         break;
       case 'completion':
         completionTokens += Number(m.tokenCount ?? m.responseLength ?? 0);
+        // 从 completion 事件中提取 Copilot autoMode 信号
+        if (m.autoModePredictedLabel !== undefined) {
+          autoModePredictedLabel = encodeAutoModeLabel(String(m.autoModePredictedLabel));
+        }
+        if (m.autoModeConfidence !== undefined) {
+          autoModeConfidence = Number(m.autoModeConfidence);
+        }
         break;
       case 'tool_call': {
         toolCalls++;
@@ -189,6 +216,8 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
     retryRate,
     hasLoop: detectLoop(toolSequence) ? 1 : 0,
     subAgents,
+    autoModePredictedLabel,
+    autoModeConfidence,
   };
 }
 

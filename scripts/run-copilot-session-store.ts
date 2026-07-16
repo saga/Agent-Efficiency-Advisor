@@ -17,7 +17,7 @@ import { CopilotSessionStore } from '../src/realtime/CopilotSessionStore.js';
 import { AnalyticsEngine } from '../src/ml/AnalyticsEngine.js';
 import { EmbeddingStore } from '../src/embedding/EmbeddingStore.js';
 
-const OUT_DB = './data/aea-session-store.db';
+const OUT_DB = './data/aea-real.db';
 
 function main() {
   // Fresh output DB

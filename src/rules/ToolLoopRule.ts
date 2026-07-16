@@ -1,33 +1,41 @@
 import type { AgentLogEvent, Alert, SessionState } from '../types.js';
 import { BaseRule, makeAlert } from './Rule.js';
-
-const LOOP_WINDOW = 10;
-const LOOP_MIN_REPEATS = 4;
+import { DEFAULT_RULE_CONFIG, type RuleConfig } from './config.js';
 
 export class ToolLoopRule extends BaseRule {
   id = 'tool-loop';
   name = 'Tool Loop';
 
+  private readonly window: number;
+  private readonly minRepeats: number;
+
+  constructor(config?: RuleConfig) {
+    super();
+    const c = config?.toolLoop ?? DEFAULT_RULE_CONFIG.toolLoop;
+    this.window = c.window;
+    this.minRepeats = c.minRepeats;
+  }
+
   match(state: SessionState, event: AgentLogEvent): boolean {
     if (event.type !== 'tool_call') return false;
-    return detectLoop(state.toolSequence);
+    return detectLoop(state.toolSequence, this.window, this.minRepeats);
   }
 
   action(state: SessionState): Alert | undefined {
-    const loop = findLoopPattern(state.toolSequence);
+    const loop = findLoopPattern(state.toolSequence, this.minRepeats);
     return makeAlert(this.id, state, 'warning', `Detected possible tool loop: ${loop}`, {
-      sequence: state.toolSequence.slice(-LOOP_WINDOW),
+      sequence: state.toolSequence.slice(-this.window),
     });
   }
 }
 
-function detectLoop(sequence: string[]): boolean {
-  if (sequence.length < LOOP_MIN_REPEATS * 2) return false;
-  const recent = sequence.slice(-LOOP_WINDOW);
-  return findLoopPattern(recent) !== 'none';
+function detectLoop(sequence: string[], window: number, minRepeats: number): boolean {
+  if (sequence.length < minRepeats * 2) return false;
+  const recent = sequence.slice(-window);
+  return findLoopPattern(recent, minRepeats) !== 'none';
 }
 
-function findLoopPattern(sequence: string[]): string {
+function findLoopPattern(sequence: string[], minRepeats: number): string {
   for (let len = 2; len <= 5; len++) {
     const pattern = sequence.slice(-len).join(' → ');
     let repeats = 0;
@@ -36,7 +44,7 @@ function findLoopPattern(sequence: string[]): string {
       if (chunk === pattern) repeats++;
       else break;
     }
-    if (repeats >= LOOP_MIN_REPEATS) return pattern;
+    if (repeats >= minRepeats) return pattern;
   }
   return 'none';
 }

@@ -3,13 +3,13 @@
 // → queries features → materializes a training matrix.
 
 import { rmSync } from 'node:fs';
-import { openDatabase } from './store/schema.js';
-import { EventStore } from './store/EventStore.js';
-import { FeatureRegistry } from './store/FeatureRegistry.js';
-import { FeatureStore } from './store/FeatureStore.js';
-import { FeaturePipeline } from './store/FeaturePipeline.js';
-import { LabelStore } from './store/LabelStore.js';
-import type { IDEEvent } from './store/types.js';
+import { openDatabase } from '../store/schema.js';
+import { EventStore } from '../store/EventStore.js';
+import { FeatureRegistry } from '../store/FeatureRegistry.js';
+import { FeatureStore } from '../store/FeatureStore.js';
+import { FeaturePipeline } from '../store/FeaturePipeline.js';
+import { LabelStore } from '../store/LabelStore.js';
+import type { IDEEvent } from '../store/types.js';
 
 const DB_PATH = './data/aea.db';
 

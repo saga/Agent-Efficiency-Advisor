@@ -47,6 +47,13 @@ export interface SessionEndEvent extends LogEvent {
   payload: Record<string, unknown>;
 }
 
+/**
+ * @legacy V2.5 AgentLogEvent — 被 V6 IDEEvent 取代
+ *
+ * 此类型仍在 realtime 层(SessionManager/RuleEngine/Metrics 等)中使用。
+ * 新代码应使用 src/store/types.ts 的 IDEEvent。
+ * 转换请用 src/realtime/EventBridge.ts 的 agentLogEventToIDEEvent()。
+ */
 export type AgentLogEvent =
   | LLMRequestEvent
   | ToolCallEvent

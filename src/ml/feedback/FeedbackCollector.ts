@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { OutcomeSignal, SessionState } from '../../types.js';
 import { extractModelSizeFeatures, FEATURE_COLUMNS, type ModelSizeLabel } from '../features.js';
+import type { LabelStore } from '../../store/LabelStore.js';
 
 export interface FeedbackSample {
   sessionId: string;
@@ -14,7 +15,9 @@ export interface FeedbackSample {
 export class FeedbackCollector {
   private buffer: FeedbackSample[] = [];
 
-  constructor(private csvPath: string) {}
+  // labelStore: 可选,V6 LabelStore。传入后优先把 label 写入 SQLite labels 表。
+  // csvPath: 可选,向后兼容的 CSV 路径。仅传 csvPath(不传 labelStore)时行为与原版一致。
+  constructor(private labelStore?: LabelStore, private csvPath?: string) {}
 
   recordShadowResult(state: SessionState, label: ModelSizeLabel, confidence: number): void {
     this.buffer.push({
@@ -24,6 +27,10 @@ export class FeedbackCollector {
       source: 'shadow',
       confidence,
     });
+    // 同时写入 V6 labels 表(如果 LabelStore 可用)
+    if (this.labelStore) {
+      this.labelStore.write(state.sessionId, 'session', label, 'shadow');
+    }
   }
 
   recordOutcome(state: SessionState, outcome: OutcomeSignal, recommendedModel: ModelSizeLabel): void {
@@ -51,10 +58,26 @@ export class FeedbackCollector {
       source: 'outcome',
       confidence: successScore,
     });
+    // 同时写入 V6 labels 表(如果 LabelStore 可用)
+    if (this.labelStore) {
+      this.labelStore.write(state.sessionId, 'session', label, 'outcome');
+    }
   }
 
   flush(): void {
     if (this.buffer.length === 0) return;
+
+    // 如果 LabelStore 可用,优先使用 SQLite(labels 已在 record 时写入),仅清理 buffer
+    if (this.labelStore) {
+      this.buffer = [];
+      return;
+    }
+
+    // 向后兼容:仅传 csvPath 时写 CSV。若无 csvPath,仅清理 buffer。
+    if (!this.csvPath) {
+      this.buffer = [];
+      return;
+    }
 
     const dir = path.dirname(this.csvPath);
     fs.mkdirSync(dir, { recursive: true });

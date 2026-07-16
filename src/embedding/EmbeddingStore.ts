@@ -48,6 +48,13 @@ export class EmbeddingStore {
     return scored.slice(0, topK);
   }
 
+  /** 删除超过指定天数的旧 embedding */
+  prune(olderThanDays: number): number {
+    const cutoff = Date.now() - olderThanDays * 86400000;
+    const result = this.db.prepare('DELETE FROM embeddings WHERE created_at < ?').run(cutoff);
+    return Number(result.changes);
+  }
+
   count(entityType?: EmbeddingEntityType): number {
     const sql = entityType
       ? 'SELECT COUNT(*) AS n FROM embeddings WHERE entity_type = ?'

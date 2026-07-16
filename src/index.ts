@@ -32,6 +32,7 @@ export * from './ml/index.js';
 export * from './types.js';
 
 // Historical analysis (V1/V2)
+/** @legacy V1/V2 历史分析模块 — 保留用于离线训练数据参考,新代码应使用 V6/V7 模块 */
 export * as history from './history/index.js';
 
 // V5 Runtime Intelligence Platform
