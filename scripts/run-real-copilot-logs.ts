@@ -87,11 +87,7 @@ async function main() {
     }
 
     // Real Copilot logs do not emit session_end; trigger feature computation here.
-    try {
-      pipeline.computeSession(sessionId);
-    } catch (err) {
-      console.error(`[run-real-copilot-logs] feature computation failed for ${sessionId}:`, err);
-    }
+    v6sink.flushSession(sessionId);
   }
 
   console.log('\n═══════════════════════════════════════════════════════════');

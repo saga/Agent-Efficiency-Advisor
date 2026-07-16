@@ -59,6 +59,19 @@ export class V6Sink {
   }
 
   /**
+   * Manually trigger feature computation for a session. Useful for log sources
+   * (e.g. real VSCode Copilot Agent Debug Logs) that do not emit a session_end
+   * event when the file/session is finished.
+   */
+  flushSession(sessionId: string): void {
+    try {
+      this.pipeline.computeSession(sessionId);
+    } catch (err) {
+      console.error(`[V6Sink] feature computation failed for ${sessionId}:`, err);
+    }
+  }
+
+  /**
    * Convert AgentLogEvent → IDEEvent(s).
    *
    * Mapping rules:
