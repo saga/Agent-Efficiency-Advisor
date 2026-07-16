@@ -253,7 +253,14 @@ export class TranscriptParser {
 
             // Determine if this was a file edit
             const args = startInfo.args;
-            const filePath = String(args.filePath ?? args.path ?? args.file ?? '');
+            let filePath = String(args.filePath ?? args.path ?? args.file ?? '');
+            // multi_replace_string_in_file stores filePath in replacements[0].filePath
+            if (!filePath && startInfo.toolName === 'multi_replace_string_in_file') {
+              const replacements = args.replacements as Array<Record<string, unknown>> | undefined;
+              if (Array.isArray(replacements) && replacements.length > 0) {
+                filePath = String(replacements[0]?.filePath ?? '');
+              }
+            }
 
             if (filePath && [
             'edit_file', 'apply_edit', 'write_to_file', 'create_file', 'insert_edit',

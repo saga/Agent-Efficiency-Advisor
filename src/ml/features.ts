@@ -199,13 +199,25 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
         if (m.path && typeof m.path === 'string') filesRead.add(m.path);
         break;
       case 'edit':
-      case 'accept':
-        // V6Sink maps a successful edit to an 'accept' IDEEvent; count both
-        // as edits so real-time sessions feed the model-size feature schema.
         edits++;
         if (m.file && typeof m.file === 'string') filesEdited.add(m.file);
         if (m.path && typeof m.path === 'string') filesEdited.add(m.path);
         break;
+      case 'accept': {
+        // TranscriptParser emits 'accept' for ALL successful tool completions
+        // (read_file, grep_search, run_in_terminal, replace_string_in_file, etc.).
+        // Only count as edit when the tool actually modified a file.
+        const isEditTool = [
+          'edit_file', 'apply_edit', 'write_to_file', 'create_file', 'insert_edit',
+          'replace_string_in_file', 'multi_replace_string_in_file',
+        ].includes(String(m.toolName ?? ''));
+        if (isEditTool || m.file || m.path) {
+          edits++;
+          if (m.file && typeof m.file === 'string') filesEdited.add(m.file);
+          if (m.path && typeof m.path === 'string') filesEdited.add(m.path);
+        }
+        break;
+      }
       case 'retry':
         retries++;
         break;
