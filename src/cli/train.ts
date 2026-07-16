@@ -1,13 +1,17 @@
-import { CatBoostTrainer } from '../ml/CatBoostTrainer.js';
+// 训练所有 ML 模型方案(CatBoost + LR + NB + KNN + Conformal)
+//
+// 用法:npm run train
+
 import { loadRealTrainingSamples } from '../ml/realDataset.js';
 import { generateSyntheticDataset } from '../ml/dataset.js';
 import type { TrainingSample } from '../ml/dataset.js';
+import { ModelTrainer } from '../ml/ModelTrainer.js';
+import type { AutoModeSignal } from '../ml/LabelPropagation.js';
+import { EventStore } from '../store/EventStore.js';
+import { openDatabase } from '../store/schema.js';
+import { encodeAutoModeLabel } from '../ml/features.js';
 
-// 所有真实数据源 demo 现在统一写入 aea-real.db,
-// 训练时只读这一个数据库即可。
-const REAL_DB_SOURCES = [
-  './data/aea-real.db',
-];
+const REAL_DB_SOURCES = ['./data/aea-real.db'];
 
 function summarizeLabels(samples: TrainingSample[]): Record<string, number> {
   const byLabel = new Map<string, number>();
@@ -17,10 +21,37 @@ function summarizeLabels(samples: TrainingSample[]): Record<string, number> {
   return Object.fromEntries(byLabel);
 }
 
-async function main() {
-  const trainer = new CatBoostTrainer();
+/**
+ * 从 aea-real.db 中提取 autoModeResolution 信号,用于标签传播。
+ */
+function loadAutoModeSignals(dbPath: string): Map<string, AutoModeSignal> {
+  const signals = new Map<string, AutoModeSignal>();
+  if (!require('node:fs').existsSync(dbPath)) return signals;
 
-  // 1. Collect observed real sessions from all AEA data sources.
+  const db = openDatabase(dbPath);
+  const eventStore = new EventStore(db);
+
+  for (const sessionId of eventStore.getSessionIds()) {
+    const events = eventStore.getBySession(sessionId);
+    for (const e of events) {
+      if (e.eventType !== 'completion') continue;
+      const m = e.metadata ?? {};
+      if (m.autoModePredictedLabel !== undefined && m.autoModeConfidence !== undefined) {
+        signals.set(sessionId, {
+          predictedLabel: String(m.autoModePredictedLabel),
+          confidence: Number(m.autoModeConfidence),
+        });
+        break; // 每个 session 只取第一个 autoMode 信号
+      }
+    }
+  }
+
+  db.close();
+  return signals;
+}
+
+async function main() {
+  // 1. 收集真实数据
   const sourceSamples = new Map<string, TrainingSample[]>();
   for (const dbPath of REAL_DB_SOURCES) {
     const samples = loadRealTrainingSamples({ dbPath });
@@ -29,12 +60,9 @@ async function main() {
     }
   }
 
-  // Merge and dedupe by sessionId; a session may appear in both debug logs
-  // and session-store, but the EventStore session_id is the canonical key.
   const realById = new Map<string, TrainingSample>();
-  for (const [dbPath, samples] of sourceSamples) {
+  for (const [, samples] of sourceSamples) {
     for (const s of samples) {
-      // Prefer the richer debug-log representation if a session exists twice.
       if (!realById.has(s.sessionId)) {
         realById.set(s.sessionId, s);
       }
@@ -42,6 +70,10 @@ async function main() {
   }
   const realSamples = Array.from(realById.values());
   let samples: TrainingSample[] = realSamples;
+
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('  Multi-Model Training');
+  console.log('═══════════════════════════════════════════════════════════\n');
 
   console.log(`Found ${realSamples.length} real session(s) across ${sourceSamples.size} source(s).`);
   for (const [dbPath, list] of sourceSamples) {
@@ -51,39 +83,70 @@ async function main() {
     console.log('Real label distribution:', summarizeLabels(realSamples));
   }
 
-  // 2. If real data is too small or imbalanced, pad with synthetic samples.
+  // 2. 加载 autoModeResolution 信号
+  const autoModeSignals = loadAutoModeSignals(REAL_DB_SOURCES[0]);
+  console.log(`\nAutoMode signals: ${autoModeSignals.size} session(s) with Copilot ML predictions`);
+  for (const [sid, sig] of autoModeSignals) {
+    console.log(`  ${sid.slice(0, 8)}: ${sig.predictedLabel} (conf=${sig.confidence.toFixed(2)})`);
+  }
+
+  // 3. 如果真实数据不足,补充合成数据
   const minRealSamples = 50;
   if (realSamples.length < minRealSamples) {
     const synthSize = minRealSamples * 3;
-    console.log(`Real data insufficient (${realSamples.length} < ${minRealSamples}); padding with ${synthSize} synthetic samples.`);
+    console.log(`\nReal data insufficient (${realSamples.length} < ${minRealSamples}); padding with ${synthSize} synthetic samples.`);
     samples = [...realSamples, ...generateSyntheticDataset(synthSize)];
   } else {
-    console.log('Training on real data only.');
+    console.log('\nTraining on real data only.');
   }
 
-  const byLabel = new Map<string, number>();
-  for (const s of samples) {
-    byLabel.set(s.label, (byLabel.get(s.label) ?? 0) + 1);
-  }
-  console.log('Final label distribution:', Object.fromEntries(byLabel));
+  console.log('Final label distribution:', summarizeLabels(samples));
 
-  const result = await trainer.train({
+  // 4. 用 ModelTrainer 训练所有模型
+  console.log('\n───────── Training all models ─────────\n');
+
+  const trainer = new ModelTrainer();
+  const result = await trainer.trainAll({
     samples,
+    realSamples: realSamples.length,
     outDir: './data/ml',
-    modelOut: './data/ml/model.cbm',
-    iterations: 300,
-    depth: 6,
-    learningRate: 0.1,
+    autoModeSignals,
+    enableLabelPropagation: autoModeSignals.size > 0,
   });
 
-  console.log('\nTraining complete:');
-  console.log(`  Model: ${result.modelOut}`);
-  console.log(`  Trees: ${result.iterations}`);
-  console.log('\nFeature importance:');
-  const sorted = Object.entries(result.featureImportance).sort((a, b) => b[1] - a[1]);
-  for (const [name, score] of sorted) {
-    console.log(`  ${name}: ${score.toFixed(2)}`);
+  // 5. 输出训练报告
+  console.log('\n═══════════════════════════════════════════════════════════');
+  console.log('  Training Report');
+  console.log('═══════════════════════════════════════════════════════════\n');
+
+  console.log(`Total samples: ${result.totalSamples} (real=${result.realSamples}, synthetic=${result.syntheticSamples})`);
+
+  if (result.labelPropagation) {
+    console.log(`Label propagation: ${result.labelPropagation.iterations} iterations, converged=${result.labelPropagation.converged}, autoMode anchors=${result.labelPropagation.autoModeAnchors}`);
   }
+
+  console.log('\nModel comparison:');
+  console.log('  ┌────────────────────────────┬──────────┬───────────┐');
+  console.log('  │ Model                      │ Accuracy │ Samples   │');
+  console.log('  ├────────────────────────────┼──────────┼───────────┤');
+  for (const m of result.models) {
+    const acc = m.accuracy !== undefined ? m.accuracy.toFixed(3) : 'n/a';
+    console.log(`  │ ${m.modelName.padEnd(26)} │ ${acc.padEnd(8)} │ ${String(m.trainSamples).padEnd(9)} │`);
+  }
+  console.log('  └────────────────────────────┴──────────┴───────────┘');
+
+  // 特征重要性对比
+  for (const m of result.models) {
+    if (m.featureImportance && Object.keys(m.featureImportance).length > 0) {
+      console.log(`\n${m.modelName} feature importance:`);
+      const sorted = Object.entries(m.featureImportance).sort((a, b) => b[1] - a[1]);
+      for (const [name, score] of sorted.slice(0, 5)) {
+        console.log(`  ${name}: ${score.toFixed(4)}`);
+      }
+    }
+  }
+
+  console.log('\nDone. Models saved to ./data/ml/');
 }
 
 main().catch((err) => {
