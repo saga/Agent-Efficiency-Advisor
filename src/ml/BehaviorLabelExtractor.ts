@@ -129,19 +129,51 @@ export function extractBehaviorLabel(
     ? totalReward / interactionCount
     : totalReward;
 
-  // Determine label
+  // Determine label by combining reward (was the model sufficient?)
+  // with complexity (how hard was the task?).
+  //
+  // Key insight: behavior signals tell us if the model was good enough.
+  // If the session failed (low reward), always need a larger model.
+  // If the session succeeded, use complexity to determine what was needed.
+  //
+  //   reward < 0   → large  (model wasn't sufficient, need bigger)
+  //   reward >= 0  → use complexity:
+  //     low complexity  → mini  (simple task, small model was enough)
+  //     medium complexity → medium
+  //     high complexity → large (complex task, large model was needed)
   let label: ModelSizeLabel;
   let labelSource: 'behavior' | 'heuristic';
 
   if (acceptCount > 0 || retryCount > 0 || rejectCount > 0) {
-    // We have real behavior signals — use reward-based label
     labelSource = 'behavior';
-    if (rewardNormalized >= miniThreshold) {
-      label = 'mini';
-    } else if (rewardNormalized >= mediumThreshold) {
-      label = 'medium';
-    } else {
+
+    if (rewardNormalized < mediumThreshold) {
+      // Session had failures (retries/rejects) — model wasn't good enough
       label = 'large';
+    } else {
+      // Session succeeded — use complexity to determine needed model size
+      const complexity =
+        features.promptTokens / 1000 +
+        features.toolCalls * 10 +
+        features.edits * 20 +
+        features.retries * 50 +
+        features.hasLoop * 100 +
+        features.subAgents * 30;
+
+      if (
+        features.promptTokens < 8000 &&
+        features.toolCalls <= 5 &&
+        features.edits <= 2 &&
+        features.retries === 0 &&
+        features.hasLoop === 0 &&
+        features.subAgents === 0
+      ) {
+        label = 'mini';
+      } else if (complexity <= 60) {
+        label = 'medium';
+      } else {
+        label = 'large';
+      }
     }
   } else {
     // No behavior signals — fall back to heuristic

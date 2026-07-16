@@ -10,6 +10,8 @@ import type { AutoModeSignal } from '../ml/LabelPropagation.js';
 import { EventStore } from '../store/EventStore.js';
 import { openDatabase } from '../store/schema.js';
 import { encodeAutoModeLabel } from '../ml/features.js';
+import { WeakLabelFusion, type WeakLabel } from '../ml/WeakLabelFusion.js';
+import { heuristicLabel } from '../ml/realDataset.js';
 
 const REAL_DB_SOURCES = [
   './data/aea-real-copilot.db',
@@ -82,7 +84,7 @@ async function main() {
   let samples: TrainingSample[] = realSamples;
 
   console.log('═══════════════════════════════════════════════════════════');
-  console.log('  Multi-Model Training (Behavior Labels + Stacking)');
+  console.log('  Multi-Model Training (Weak Label Fusion + Pseudo + Stacking)');
   console.log('═══════════════════════════════════════════════════════════\n');
 
   console.log(`Found ${realSamples.length} real session(s) across ${sourceSamples.size} source(s).`);
@@ -99,6 +101,59 @@ async function main() {
   console.log(`\nAutoMode signals: ${autoModeSignals.size} session(s) with Copilot ML predictions`);
   for (const [sid, sig] of autoModeSignals) {
     console.log(`  ${sid.slice(0, 8)}: ${sig.predictedLabel} (conf=${sig.confidence.toFixed(2)})`);
+  }
+
+  // 2b. Weak Label Fusion — 融合多个弱标签源
+  if (realSamples.length > 0) {
+    console.log('\n───────── Weak Label Fusion ─────────\n');
+    const fusion = new WeakLabelFusion();
+    const allLabels = new Map<string, WeakLabel[]>();
+
+    for (const s of realSamples as any[]) {
+      const labels: WeakLabel[] = [];
+
+      // 源 1: behavior label（如果有 accept/retry 信号）
+      if (s.labelSource === 'behavior' && s.behaviorSignals) {
+        labels.push(WeakLabelFusion.fromLabel('behavior', s.label));
+      }
+
+      // 源 2: heuristic label
+      labels.push(WeakLabelFusion.fromLabel('heuristic', heuristicLabel(s.features)));
+
+      // 源 3: autoMode label（如果有）
+      const autoMode = autoModeSignals.get(s.sessionId);
+      if (autoMode) {
+        const autoLabel = autoMode.predictedLabel === 'no_reasoning' ? 'mini'
+          : autoMode.predictedLabel === 'needs_reasoning' ? 'large' : 'medium';
+        labels.push(WeakLabelFusion.fromLabel('autoMode', autoLabel as any));
+      }
+
+      allLabels.set(s.sessionId, labels);
+    }
+
+    // 估计源准确率
+    if (allLabels.size > 0) {
+      const estimated = fusion.estimateAccuracy(allLabels);
+      console.log('Estimated source accuracy:');
+      for (const [src, acc] of Object.entries(estimated)) {
+        console.log(`  ${src}: ${acc.toFixed(3)}`);
+      }
+    }
+
+    // 融合标签
+    let fusedCount = 0;
+    for (const s of realSamples as any[]) {
+      const labels = allLabels.get(s.sessionId);
+      if (labels && labels.length > 1) {
+        const fused = fusion.fuse(labels);
+        if (fused.label !== s.label) {
+          fusedCount++;
+        }
+        s.label = fused.label;
+      }
+    }
+    console.log(`Fused labels: ${fusedCount} session(s) changed label after fusion`);
+    console.log('Fused label distribution:', summarizeLabels(realSamples));
   }
 
   // 3. 如果真实数据不足,补充合成数据
@@ -134,6 +189,10 @@ async function main() {
 
   if (result.labelPropagation) {
     console.log(`Label propagation: ${result.labelPropagation.iterations} iterations, converged=${result.labelPropagation.converged}, autoMode anchors=${result.labelPropagation.autoModeAnchors}`);
+  }
+
+  if (result.pseudoLabels) {
+    console.log(`Pseudo-labels: ${result.pseudoLabels.totalGenerated} generated in ${result.pseudoLabels.rounds} round(s), avg confidence=${result.pseudoLabels.avgConfidence.toFixed(3)}`);
   }
 
   console.log('\nModel comparison:');

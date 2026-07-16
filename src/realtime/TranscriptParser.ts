@@ -255,7 +255,10 @@ export class TranscriptParser {
             const args = startInfo.args;
             const filePath = String(args.filePath ?? args.path ?? args.file ?? '');
 
-            if (filePath && ['edit_file', 'apply_edit', 'write_to_file', 'create_file', 'insert_edit'].includes(startInfo.toolName)) {
+            if (filePath && [
+            'edit_file', 'apply_edit', 'write_to_file', 'create_file', 'insert_edit',
+            'replace_string_in_file', 'multi_replace_string_in_file',
+          ].includes(startInfo.toolName)) {
               // File edit → accept or retry based on success
               const eventType: IDEEventType = success ? 'accept' : 'retry';
               const event: IDEEvent = {

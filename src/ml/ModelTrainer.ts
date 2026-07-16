@@ -18,6 +18,7 @@ import { KnnModel } from './KnnModel.js';
 import { ConformalPredictor } from './ConformalPredictor.js';
 import { LabelPropagation, type AutoModeSignal } from './LabelPropagation.js';
 import { StackingMetaLearner } from './StackingMetaLearner.js';
+import { PseudoLabeler } from './PseudoLabeler.js';
 import type { ModelSizeFeatures } from './features.js';
 
 export interface MultiModelTrainResult {
@@ -29,6 +30,11 @@ export interface MultiModelTrainResult {
     iterations: number;
     converged: boolean;
     autoModeAnchors: number;
+  };
+  pseudoLabels?: {
+    totalGenerated: number;
+    rounds: number;
+    avgConfidence: number;
   };
 }
 
@@ -104,7 +110,56 @@ export class ModelTrainer {
       console.error(`  ✗ CatBoost failed: ${err}`);
     }
 
-    // 5. 训练 Stacking Meta Learner（在线 LR + KNN + NB → Meta LR）
+    // 5. Pseudo-labeling — 用已训练模型为低置信标签生成伪标签
+    let pseudoLabelInfo: MultiModelTrainResult['pseudoLabels'] = undefined;
+    const pseudoCandidates = samples.filter(
+      (s) => s.sessionId.startsWith('heuristic:') || s.sessionId.startsWith('unlabeled:'),
+    );
+
+    if (pseudoCandidates.length > 0 && trainResults.length > 0) {
+      console.log('\n───────── Pseudo-labeling ─────────\n');
+      try {
+        const pseudoModel = new LogisticRegressionModel(500, 0.01, 0.01);
+        const labeler = new PseudoLabeler(pseudoModel, {
+          confidenceThreshold: 0.80,
+          maxRounds: 2,
+          maxPseudoPerRound: 30,
+        });
+        const labeledSamples = samples.filter(
+          (s) => !s.sessionId.startsWith('heuristic:') && !s.sessionId.startsWith('unlabeled:'),
+        );
+        const pseudoResult = await labeler.generate(
+          labeledSamples,
+          pseudoCandidates,
+          path.join(outDir, 'pseudo-model.json'),
+        );
+
+        if (pseudoResult.pseudoLabels.length > 0) {
+          // 将伪标签样本加入训练集
+          const pseudoSamples = pseudoResult.samples.filter(
+            (s) => s.sessionId.startsWith('pseudo:'),
+          );
+          samples = [...samples, ...pseudoSamples];
+
+          const avgConf = pseudoResult.pseudoLabels.reduce((s, p) => s + p.confidence, 0)
+            / pseudoResult.pseudoLabels.length;
+          pseudoLabelInfo = {
+            totalGenerated: pseudoResult.pseudoLabels.length,
+            rounds: pseudoResult.rounds.length,
+            avgConfidence: avgConf,
+          };
+          console.log(`  Generated ${pseudoResult.pseudoLabels.length} pseudo-label(s) in ${pseudoResult.rounds.length} round(s)`);
+          console.log(`  Average confidence: ${avgConf.toFixed(3)}`);
+          for (const r of pseudoResult.rounds) {
+            console.log(`    Round ${r.round}: ${r.pseudoCount} labels, avg conf=${r.avgConfidence.toFixed(3)}`);
+          }
+        }
+      } catch (err) {
+        console.error(`  Pseudo-labeling failed: ${err}`);
+      }
+    }
+
+    // 6. 训练 Stacking Meta Learner（在线 LR + KNN + NB → Meta LR）
     try {
       const stackingInfo = await this.trainStacking(samples, outDir);
       trainResults.push(stackingInfo);
@@ -119,6 +174,7 @@ export class ModelTrainer {
       realSamples,
       syntheticSamples: samples.length - realSamples,
       labelPropagation: labelPropInfo,
+      pseudoLabels: pseudoLabelInfo,
     };
   }
 

@@ -20,6 +20,7 @@ import { FEATURE_COLUMNS, INDEX_LABEL, LABEL_INDEX } from './features.js';
 import { OnlineLogisticRegression } from './OnlineLogisticRegression.js';
 import { KnnModel } from './KnnModel.js';
 import { NaiveBayesModel } from './NaiveBayesModel.js';
+import { TemperatureScaler } from './TemperatureScaler.js';
 
 const NUM_CLASSES = 3;
 const NUM_BASE_MODELS = 3;
@@ -30,6 +31,8 @@ interface MetaModelData {
   baseModelPaths: string[];
   metaAccuracy: number;
   samplesSeen: number;
+  /** 每个基础模型的温度参数（Temperature Scaling 校准） */
+  temperatures: number[];
 }
 
 export class StackingMetaLearner implements TrainableModel {
@@ -40,6 +43,7 @@ export class StackingMetaLearner implements TrainableModel {
   private metaBiases: number[] = [0, 0, 0];
   private baseModels: TrainableModel[] = [];
   private baseModelPaths: string[] = [];
+  private temperatures: number[] = [1.0, 1.0, 1.0];
   private metaAccuracy = 0;
   private samplesSeen = 0;
   private trained = false;
@@ -107,19 +111,26 @@ export class StackingMetaLearner implements TrainableModel {
       await this.baseModels[i].train(samples, this.baseModelPaths[i]);
     }
 
-    // Train meta-model on out-of-fold predictions
-    this.trainMetaModel(metaFeatures, metaLabels);
+    // Temperature Scaling — 学习每个 base model 的温度参数
+    // 用 out-of-fold 预测的 logits 反推，在 metaLabels 上优化 NLL
+    this.temperatures = this.learnTemperatures(metaFeatures, metaLabels);
+
+    // 应用温度校准到 meta-features
+    const calibratedMetaFeatures = metaFeatures.map((mf) => this.applyTemperature(mf));
+
+    // Train meta-model on calibrated out-of-fold predictions
+    this.trainMetaModel(calibratedMetaFeatures, metaLabels);
     this.samplesSeen = samples.length;
     this.trained = true;
 
     // Compute meta accuracy
     let correct = 0;
-    for (let i = 0; i < metaFeatures.length; i++) {
-      const probs = this.metaForward(metaFeatures[i]);
+    for (let i = 0; i < calibratedMetaFeatures.length; i++) {
+      const probs = this.metaForward(calibratedMetaFeatures[i]);
       const pred = probs.indexOf(Math.max(...probs));
       if (pred === metaLabels[i]) correct++;
     }
-    this.metaAccuracy = metaFeatures.length > 0 ? correct / metaFeatures.length : 0;
+    this.metaAccuracy = calibratedMetaFeatures.length > 0 ? correct / calibratedMetaFeatures.length : 0;
 
     // Save
     this.save(modelPath);
@@ -141,6 +152,7 @@ export class StackingMetaLearner implements TrainableModel {
     this.baseModelPaths = data.baseModelPaths;
     this.metaAccuracy = data.metaAccuracy;
     this.samplesSeen = data.samplesSeen;
+    this.temperatures = data.temperatures ?? [1.0, 1.0, 1.0];
     this.trained = true;
 
     // Load base models
@@ -158,6 +170,7 @@ export class StackingMetaLearner implements TrainableModel {
       baseModelPaths: this.baseModelPaths,
       metaAccuracy: this.metaAccuracy,
       samplesSeen: this.samplesSeen,
+      temperatures: this.temperatures,
     };
     fs.writeFileSync(modelPath, JSON.stringify(data), 'utf-8');
   }
@@ -175,8 +188,11 @@ export class StackingMetaLearner implements TrainableModel {
       }
     }
 
+    // Apply temperature scaling to base model predictions
+    const calibratedInput = this.applyTemperature(metaInput);
+
     // Meta-model prediction
-    const probs = this.metaForward(metaInput);
+    const probs = this.metaForward(calibratedInput);
     const classIndex = probs.indexOf(Math.max(...probs));
     return {
       label: INDEX_LABEL[classIndex],
@@ -216,7 +232,8 @@ export class StackingMetaLearner implements TrainableModel {
       }
     }
 
-    const probs = this.metaForward(metaInput);
+    const calibratedInput = this.applyTemperature(metaInput);
+    const probs = this.metaForward(calibratedInput);
     const classIndex = probs.indexOf(Math.max(...probs));
     const final: ModelPrediction = {
       label: INDEX_LABEL[classIndex],
@@ -258,6 +275,78 @@ export class StackingMetaLearner implements TrainableModel {
     const logits = this.metaBiases.map((b, c) =>
       b + this.metaWeights[c].reduce((sum, w, f) => sum + w * x[f], 0),
     );
+    const max = Math.max(...logits);
+    const exps = logits.map((l) => Math.exp(l - max));
+    const sum = exps.reduce((a, b) => a + b, 0);
+    return exps.map((e) => e / sum);
+  }
+
+  /**
+   * 学习每个 base model 的温度参数。
+   * meta-features 是 [model1_p0, model1_p1, model1_p2, model2_p0, ...] 的拼接，
+   * 对每个 base model 的 3 个概率反推 logits，优化温度 T 使 NLL 最小。
+   */
+  private learnTemperatures(metaFeatures: number[][], metaLabels: number[]): number[] {
+    const temperatures: number[] = [];
+
+    for (let m = 0; m < NUM_BASE_MODELS; m++) {
+      const start = m * NUM_CLASSES;
+      // 收集该 base model 的 logits 和真实标签
+      const logits: number[][] = [];
+      const labels: number[] = [];
+
+      for (let i = 0; i < metaFeatures.length; i++) {
+        const probs = metaFeatures[i].slice(start, start + NUM_CLASSES);
+        logits.push(probs.map((p) => Math.log(p + 1e-10)));
+        labels.push(metaLabels[i]);
+      }
+
+      // 优化温度
+      let T = 1.0;
+      const lr = 0.05;
+      const maxIter = 200;
+
+      for (let iter = 0; iter < maxIter; iter++) {
+        let gradient = 0;
+        for (let i = 0; i < logits.length; i++) {
+          const scaledLogits = logits[i].map((l) => l / T);
+          const probs = this.softmax(scaledLogits);
+          let sumPLogit = 0;
+          for (let c = 0; c < NUM_CLASSES; c++) {
+            sumPLogit += probs[c] * logits[i][c];
+          }
+          gradient += (sumPLogit - logits[i][labels[i]]) / (T * T);
+        }
+        gradient /= logits.length;
+        T = T * Math.exp(-lr * gradient);
+        T = Math.max(0.1, Math.min(T, 10.0));
+      }
+
+      temperatures.push(T);
+    }
+
+    return temperatures;
+  }
+
+  /**
+   * 对 meta-features 应用温度校准。
+   * 每个 base model 的概率分布独立校准。
+   */
+  private applyTemperature(metaInput: number[]): number[] {
+    const calibrated: number[] = [];
+    for (let m = 0; m < NUM_BASE_MODELS; m++) {
+      const start = m * NUM_CLASSES;
+      const probs = metaInput.slice(start, start + NUM_CLASSES);
+      const T = this.temperatures[m] ?? 1.0;
+      const logits = probs.map((p) => Math.log(p + 1e-10));
+      const scaledLogits = logits.map((l) => l / T);
+      const calibratedProbs = this.softmax(scaledLogits);
+      calibrated.push(...calibratedProbs);
+    }
+    return calibrated;
+  }
+
+  private softmax(logits: number[]): number[] {
     const max = Math.max(...logits);
     const exps = logits.map((l) => Math.exp(l - max));
     const sum = exps.reduce((a, b) => a + b, 0);

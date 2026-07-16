@@ -148,13 +148,14 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
     const m = e.metadata ?? {};
     switch (e.eventType) {
       case 'chat':
-        // chat 事件只有 messageLength(字符数),不是 token 数。
-        // 真实 promptTokens 在 completion 事件中,这里只记 messageLength
-        // 作为 fallback(约 4 字符 ≈ 1 token)。
+        // chat 事件可能含 tokenCount(真实 token)或 messageLength(字符数)。
+        // transcript 数据只有 messageLength,按 4 字符 ≈ 1 token 估算。
         if (m.tokenCount) {
           promptTokens += Number(m.tokenCount);
         } else if (m.contextToken) {
           promptTokens += Number(m.contextToken);
+        } else if (m.messageLength) {
+          promptTokens += Math.ceil(Number(m.messageLength) / 4);
         }
         break;
       case 'completion':
@@ -221,7 +222,9 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
   // 其次用 session_start → session_end 的时间差。
   const startTime = events[0]?.timestamp ?? 0;
   const endTime = endEvent?.timestamp ?? events[events.length - 1]?.timestamp ?? startTime;
-  const elapsedMs = totalElapsedMs || Math.max(0, endTime - startTime);
+  // Cap at 24h to handle debug-log timestamp issues (sessions spanning multiple days)
+  const rawElapsed = totalElapsedMs || Math.max(0, endTime - startTime);
+  const elapsedMs = Math.min(rawElapsed, 86_400_000);
 
   const readToEditRatio = edits > 0 ? readFiles / edits : readFiles;
   const retryRate = toolCalls > 0 ? retries / toolCalls : 0;
