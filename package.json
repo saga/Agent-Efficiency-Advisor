@@ -17,7 +17,8 @@
     "demo:trust": "tsx src/cli-trust.ts",
     "demo:store": "tsx src/cli-store.ts",
     "demo:v6": "tsx src/cli-v6.ts",
-    "demo:real-copilot": "tsx scripts/run-real-copilot-logs.ts"
+    "demo:real-copilot": "tsx scripts/run-real-copilot-logs.ts",
+    "demo:session-store": "tsx scripts/run-copilot-session-store.ts"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

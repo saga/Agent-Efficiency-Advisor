@@ -72,14 +72,15 @@ Event → Entity → Feature → Embedding → ML → Graph → LLM
 ```
 src/
   realtime/
-    CopilotSource.ts    # chokidar + tail-file log source
-    MockLogSource.ts    # mock events for demo
-    TailManager.ts      # manage per-file tail instances
-    EventBus.ts         # decouple parser from consumers
-    LogParser.ts        # Copilot/generic JSONL parser
-    SessionState.ts     # mutable session state updates
-    SessionManager.ts   # session registry
-    V6Sink.ts           # bridge: AgentLogEvent → IDEEvent → V6 SQLite
+    CopilotSource.ts        # chokidar + tail-file log source
+    MockLogSource.ts        # mock events for demo
+    TailManager.ts          # manage per-file tail instances
+    EventBus.ts             # decouple parser from consumers
+    LogParser.ts            # Copilot/generic JSONL parser
+    CopilotSessionStore.ts  # read VSCode Copilot Chat session-state SQLite
+    SessionState.ts         # mutable session state updates
+    SessionManager.ts       # session registry
+    V6Sink.ts               # bridge: AgentLogEvent → IDEEvent → V6 SQLite
   rules/
     Rule.ts             # base rule + alert helper
     RuleEngine.ts       # evaluate all rules
@@ -202,6 +203,7 @@ npm run demo:trust              # Trustworthy Decision Engine (calibration + fus
 npm run demo:store              # SQLite Event Store + Feature Store (event pipeline + behavior features)
 npm run demo:v6                 # Full 6-layer Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
 npm run demo:real-copilot       # ingest real VSCode Copilot Agent Debug Logs (macOS default path)
+npm run demo:session-store      # ingest real VSCode Copilot Chat session-state SQLite (high-level chat semantics)
 ```
 
 ## Default rules
