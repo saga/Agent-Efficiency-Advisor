@@ -6,18 +6,18 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "demo": "tsx src/cli.ts",
-    "v4": "tsx src/cli-v4.ts",
-    "v5": "tsx src/cli-v5.ts",
-    "trust": "tsx src/cli-trust.ts",
-    "store": "tsx src/cli-store.ts",
-    "v6": "tsx src/cli-v6.ts",
-    "real-copilot": "tsx scripts/run-real-copilot-logs.ts",
-    "train": "tsx src/cli-train.ts",
-    "predict": "tsx src/cli-predict.ts",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "train": "tsx src/cli-train.ts",
+    "predict": "tsx src/cli-predict.ts",
+    "demo": "tsx src/cli.ts",
+    "demo:v4": "tsx src/cli-v4.ts",
+    "demo:v5": "tsx src/cli-v5.ts",
+    "demo:trust": "tsx src/cli-trust.ts",
+    "demo:store": "tsx src/cli-store.ts",
+    "demo:v6": "tsx src/cli-v6.ts",
+    "demo:real-copilot": "tsx scripts/run-real-copilot-logs.ts"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

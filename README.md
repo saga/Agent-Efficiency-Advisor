@@ -46,7 +46,7 @@ Copilot Debug Log
                                         └─────────────┘
 ```
 
-`LogParser.ts` now parses both the legacy synthetic AEA format and the real VSCode Copilot Agent Debug Log format (`ts`/`dur`/`sid`/`type`/`attrs`). Use `npm run real-copilot` to ingest logs from the default macOS path.
+`LogParser.ts` now parses both the legacy synthetic AEA format and the real VSCode Copilot Agent Debug Log format (`ts`/`dur`/`sid`/`type`/`attrs`). Use `npm run demo:real-copilot` to ingest logs from the default macOS path.
 
 ### V7 Observatory Layer
 
@@ -188,19 +188,20 @@ npm install
 uv venv              # create .venv
 uv pip install       # install catboost + pandas from pyproject.toml
 
-npm run demo        # real-time observability demo (rules)
-npm run train       # train CatBoost model-size classifier (uses .venv)
-npm run predict     # predict with trained model (uses .venv)
-npm run v4          # real-time recommendation + shadow evaluation + feedback
-npm run v5          # Agent Runtime Intelligence (state machine + event sourcing + plugins)
-npm run trust       # Trustworthy Decision Engine (calibration + fusion + explainability + evaluation)
-npm run store       # SQLite Event Store + Feature Store (event pipeline + behavior features)
-npm run v6          # Full 6-layer Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
-npm run real-copilot # ingest real VSCode Copilot Agent Debug Logs (macOS default path)
-npm run demo        # Realtime V2.5 dashboard + V6Sink bridge (writes to SQLite in real-time)
-npm run test        # run vitest test suite (55 tests across 7 files)
-npm run typecheck   # verify types
-npm run build       # compile to dist/
+npm run build
+npm run typecheck
+npm run test
+
+npm run train                   # train CatBoost model-size classifier (uses .venv)
+npm run predict                 # predict with trained model (uses .venv)
+
+npm run demo                    # real-time observability demo (rules)
+npm run demo:v4                 # real-time recommendation + shadow evaluation + feedback
+npm run demo:v5                 # Agent Runtime Intelligence (state machine + event sourcing + plugins)
+npm run demo:trust              # Trustworthy Decision Engine (calibration + fusion + explainability + evaluation)
+npm run demo:store              # SQLite Event Store + Feature Store (event pipeline + behavior features)
+npm run demo:v6                 # Full 6-layer Observatory demo (Event + Feature + Embedding + ML + LLM + Graph)
+npm run demo:real-copilot       # ingest real VSCode Copilot Agent Debug Logs (macOS default path)
 ```
 
 ## Default rules
