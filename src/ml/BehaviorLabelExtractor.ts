@@ -151,11 +151,13 @@ export function extractBehaviorLabel(
       // Session had failures (retries/rejects) — model wasn't good enough
       label = 'large';
     } else {
-      // Session succeeded — use complexity to determine needed model size
+      // Session succeeded — use complexity to determine needed model size.
+      // Non-edit tool calls (reads, searches) get weight 5; edits get
+      // additional weight 15 (total 20) since editing is far more complex.
       const complexity =
         features.promptTokens / 1000 +
-        features.toolCalls * 10 +
-        features.edits * 20 +
+        features.toolCalls * 5 +
+        features.edits * 15 +
         features.retries * 50 +
         features.hasLoop * 100 +
         features.subAgents * 30;

@@ -43,8 +43,8 @@ export function heuristicLabel(features: ModelSizeFeatures): ModelSizeLabel {
 
   const complexity =
     features.promptTokens / 1000 +
-    features.toolCalls * 10 +
-    features.edits * 20 +
+    features.toolCalls * 5 +
+    features.edits * 15 +
     features.retries * 50 +
     features.hasLoop * 100 +
     features.subAgents * 30;
@@ -122,7 +122,8 @@ export function loadRealTrainingSamplesWithMeta(options: RealDatasetOptions = {}
     }
 
     samples.push({
-      sessionId,
+      // Mark heuristic-only sessions for PseudoLabeler to pick up
+      sessionId: labelSource === 'heuristic' ? `heuristic:${sessionId}` : sessionId,
       features,
       label,
       labelSource,

@@ -53,6 +53,23 @@ const samples: ModelSizeFeatures[] = [
     subAgents: 0,
     autoModePredictedLabel: 1,
     autoModeConfidence: 0.7,
+    hourOfDay: 10,
+    dayOfWeek: 2,
+    isWeekend: 0,
+    chatDurationMs: 3000,
+    toolDurationMs: 2000,
+    idleMs: 1000,
+    chatToToolRatio: 1,
+    acceptRate: 0.95,
+    cancelRate: 0,
+    switchRate: 0,
+    toolSuccessRate: 0.95,
+    rollingAvgTokens: 0,
+    rollingAvgDuration: 0,
+    rollingAcceptRate: 0,
+    emaTokens: 0,
+    emaRetryRate: 0,
+    sessionsToday: 2,
   },
   // medium-like:中等复杂度
   {
@@ -73,6 +90,23 @@ const samples: ModelSizeFeatures[] = [
     subAgents: 0,
     autoModePredictedLabel: 1,
     autoModeConfidence: 0.55,
+    hourOfDay: 14,
+    dayOfWeek: 3,
+    isWeekend: 0,
+    chatDurationMs: 15000,
+    toolDurationMs: 20000,
+    idleMs: 8000,
+    chatToToolRatio: 0.8,
+    acceptRate: 0.75,
+    cancelRate: 0.05,
+    switchRate: 0.02,
+    toolSuccessRate: 0.8,
+    rollingAvgTokens: 0,
+    rollingAvgDuration: 0,
+    rollingAcceptRate: 0,
+    emaTokens: 0,
+    emaRetryRate: 0,
+    sessionsToday: 3,
   },
   // large-like:复杂任务,高 token,多工具,有循环
   {
@@ -93,6 +127,23 @@ const samples: ModelSizeFeatures[] = [
     subAgents: 3,
     autoModePredictedLabel: 2,
     autoModeConfidence: 0.85,
+    hourOfDay: 22,
+    dayOfWeek: 6,
+    isWeekend: 1,
+    chatDurationMs: 60000,
+    toolDurationMs: 70000,
+    idleMs: 30000,
+    chatToToolRatio: 0.5,
+    acceptRate: 0.6,
+    cancelRate: 0.1,
+    switchRate: 0.05,
+    toolSuccessRate: 0.65,
+    rollingAvgTokens: 0,
+    rollingAvgDuration: 0,
+    rollingAcceptRate: 0,
+    emaTokens: 0,
+    emaRetryRate: 0,
+    sessionsToday: 5,
   },
 ];
 
@@ -143,6 +194,24 @@ async function main() {
         console.log(`  │ ${name.padEnd(22)} │ ${pred.label.padEnd(8)} │ ${(pred.confidence * 100).toFixed(1).padStart(6)}%      │ ${probsStr.padEnd(19)} │`);
       } catch (err) {
         console.log(`  │ ${name.padEnd(22)} │ ERROR    │              │                     │`);
+      }
+    }
+
+    // Conformal calibration row — wraps Stacking Meta's prediction
+    const stackingModel = loaded.find((m) => m.name === 'Stacking Meta');
+    if (stackingModel) {
+      try {
+        const pred = await stackingModel.model.predict(sample);
+        const sortedProbs = [...pred.probabilities].sort((a, b) => b - a);
+        const nonconformity = 1 - sortedProbs[0];
+        const pValue = nonconformity; // simplified: p-value = 1 - top1_prob
+        const rejected = pValue >= 0.1; // reject if < 90% confidence
+        const conformalLabel = rejected ? 'uncertain' : pred.label;
+        const conformalStr = `p=${pValue.toFixed(3)} ${rejected ? '(reject)' : '(accept)'}`;
+        console.log(`  ├────────────────────────┼──────────┼──────────────┼─────────────────────┤`);
+        console.log(`  │ ${'Conformal'.padEnd(22)} │ ${conformalLabel.padEnd(8)} │ ${(pred.confidence * 100).toFixed(1).padStart(6)}%      │ ${conformalStr.padEnd(19)} │`);
+      } catch {
+        // skip if Stacking Meta failed
       }
     }
     console.log('  └────────────────────────┴──────────┴──────────────┴─────────────────────┘');

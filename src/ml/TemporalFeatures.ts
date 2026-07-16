@@ -100,6 +100,16 @@ export function extractTemporalFeatures(
   let chatCount = 0;
   let toolCount = 0;
 
+  // Build a map of toolCallId → completion timestamp for accurate tool duration.
+  // tool_call events start a tool; accept/retry events complete it.
+  const toolCompletionTs = new Map<string, number>();
+  for (const e of events) {
+    if (e.eventType === 'accept' || e.eventType === 'retry') {
+      const id = String(e.metadata?.toolCallId ?? '');
+      if (id) toolCompletionTs.set(id, e.timestamp);
+    }
+  }
+
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
     const nextTs = i < events.length - 1 ? events[i + 1].timestamp : e.timestamp;
@@ -109,22 +119,37 @@ export function extractTemporalFeatures(
       idleMs += gap;
     }
 
-    const duration = Number(e.metadata?.durationMs ?? Math.max(0, nextTs - e.timestamp));
-
     switch (e.eventType) {
-      case 'chat':
+      case 'chat': {
+        const duration = Number(e.metadata?.durationMs ?? Math.max(0, nextTs - e.timestamp));
         chatCount++;
         chatDurationMs += duration;
         break;
-      case 'tool_call':
+      }
+      case 'tool_call': {
+        toolCount++;
+        // Use toolCallId to find the actual completion timestamp
+        const id = String(e.metadata?.toolCallId ?? '');
+        const completionTs = id ? toolCompletionTs.get(id) : undefined;
+        if (completionTs !== undefined) {
+          toolDurationMs += Math.max(0, completionTs - e.timestamp);
+        }
+        break;
+      }
       case 'read_file':
       case 'run_test':
-      case 'terminal':
+      case 'terminal': {
         toolCount++;
+        const duration = Number(e.metadata?.durationMs ?? Math.max(0, nextTs - e.timestamp));
         toolDurationMs += duration;
         break;
+      }
     }
   }
+
+  // Cap idle time at 1 hour — longer gaps are likely user stepping away,
+  // not productive session context.
+  idleMs = Math.min(idleMs, 3_600_000);
 
   const chatToToolRatio = toolCount > 0 ? chatCount / toolCount : chatCount;
 

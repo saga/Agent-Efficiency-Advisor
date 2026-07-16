@@ -32,6 +32,23 @@ function makeFeatures(promptTokens: number, toolCalls: number, edits: number, re
     subAgents: retries > 2 ? 1 : 0,
     autoModePredictedLabel: promptTokens > 50000 ? 2 : 1,
     autoModeConfidence: 0.5 + Math.random() * 0.3,
+    hourOfDay: 10,
+    dayOfWeek: 2,
+    isWeekend: 0,
+    chatDurationMs: toolCalls * 1000,
+    toolDurationMs: toolCalls * 2000,
+    idleMs: toolCalls * 500,
+    chatToToolRatio: toolCalls > 0 ? 0.8 : 1,
+    acceptRate: retries > 0 ? 0.6 : 0.9,
+    cancelRate: 0,
+    switchRate: 0,
+    toolSuccessRate: retries > 0 ? 0.7 : 0.95,
+    rollingAvgTokens: 0,
+    rollingAvgDuration: 0,
+    rollingAcceptRate: 0,
+    emaTokens: 0,
+    emaRetryRate: 0,
+    sessionsToday: 1,
   };
 }
 

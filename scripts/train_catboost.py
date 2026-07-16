@@ -24,17 +24,25 @@ def main():
         sys.exit(1)
 
     feature_cols = [c for c in df.columns if c != "label"]
-    X = df[feature_cols]
-    y = df["label"].astype(int)
 
-    train_pool = Pool(data=X, label=y)
-
-    test_pool = None
+    # If a separate test CSV is provided, use it as the eval set;
+    # otherwise hold out 20% of the training data for accuracy estimation.
     if args.test_csv:
+        train_df = df
         test_df = pd.read_csv(args.test_csv)
-        X_test = test_df[feature_cols]
-        y_test = test_df["label"].astype(int)
-        test_pool = Pool(data=X_test, label=y_test)
+    else:
+        df_shuffled = df.sample(frac=1.0, random_state=42).reset_index(drop=True)
+        holdout_n = max(1, int(len(df_shuffled) * 0.2))
+        test_df = df_shuffled.iloc[:holdout_n]
+        train_df = df_shuffled.iloc[holdout_n:]
+
+    X_train = train_df[feature_cols]
+    y_train = train_df["label"].astype(int)
+    X_test = test_df[feature_cols]
+    y_test = test_df["label"].astype(int)
+
+    train_pool = Pool(data=X_train, label=y_train)
+    test_pool = Pool(data=X_test, label=y_test)
 
     model = CatBoostClassifier(
         loss_function="MultiClass",
@@ -48,9 +56,14 @@ def main():
     model.fit(train_pool, eval_set=test_pool, verbose=False)
     model.save_model(args.model_out)
 
+    # Compute holdout accuracy without sklearn — pure CatBoost + pandas
+    preds = model.predict(X_test).flatten()
+    accuracy = float((preds == y_test.values).mean())
+
     result = {
         "modelOut": args.model_out,
         "iterations": model.tree_count_,
+        "accuracy": accuracy,
         "featureImportance": dict(zip(feature_cols, model.get_feature_importance().tolist())),
     }
 

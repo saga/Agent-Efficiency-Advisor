@@ -1,5 +1,6 @@
 import type { AgentTrace, SessionState } from '../types.js';
 import type { IDEEvent } from '../store/types.js';
+import { extractTemporalFeatures } from './TemporalFeatures.js';
 
 export interface ModelSizeFeatures {
   promptTokens: number;
@@ -21,6 +22,24 @@ export interface ModelSizeFeatures {
   autoModePredictedLabel: number;
   /** Copilot 内部 ML 预测的置信度(0-1) */
   autoModeConfidence: number;
+  // ── Temporal & behavioral features ──
+  hourOfDay: number;
+  dayOfWeek: number;
+  isWeekend: number;
+  chatDurationMs: number;
+  toolDurationMs: number;
+  idleMs: number;
+  chatToToolRatio: number;
+  acceptRate: number;
+  cancelRate: number;
+  switchRate: number;
+  toolSuccessRate: number;
+  rollingAvgTokens: number;
+  rollingAvgDuration: number;
+  rollingAcceptRate: number;
+  emaTokens: number;
+  emaRetryRate: number;
+  sessionsToday: number;
 }
 
 export type ModelSizeLabel = 'mini' | 'medium' | 'large';
@@ -55,7 +74,46 @@ export const FEATURE_COLUMNS: (keyof ModelSizeFeatures)[] = [
   'subAgents',
   'autoModePredictedLabel',
   'autoModeConfidence',
+  // Temporal & behavioral
+  'hourOfDay',
+  'dayOfWeek',
+  'isWeekend',
+  'chatDurationMs',
+  'toolDurationMs',
+  'idleMs',
+  'chatToToolRatio',
+  'acceptRate',
+  'cancelRate',
+  'switchRate',
+  'toolSuccessRate',
+  'rollingAvgTokens',
+  'rollingAvgDuration',
+  'rollingAcceptRate',
+  'emaTokens',
+  'emaRetryRate',
+  'sessionsToday',
 ];
+
+/** 默认时序特征(无事件历史时使用) */
+const DEFAULT_TEMPORAL = {
+  hourOfDay: 0,
+  dayOfWeek: 0,
+  isWeekend: 0,
+  chatDurationMs: 0,
+  toolDurationMs: 0,
+  idleMs: 0,
+  chatToToolRatio: 0,
+  acceptRate: 0,
+  cancelRate: 0,
+  switchRate: 0,
+  toolSuccessRate: 0,
+  rollingAvgTokens: 0,
+  rollingAvgDuration: 0,
+  rollingAcceptRate: 0,
+  emaTokens: 0,
+  emaRetryRate: 0,
+  sessionsToday: 0,
+};
 
 /** Copilot autoMode predictedLabel 字符串 → 数值编码 */
 export function encodeAutoModeLabel(label: string | undefined): number {
@@ -88,6 +146,7 @@ export function extractModelSizeFeatures(state: SessionState): ModelSizeFeatures
     subAgents: state.subAgents,
     autoModePredictedLabel: 0,
     autoModeConfidence: 0,
+    ...DEFAULT_TEMPORAL,
   };
 }
 
@@ -114,6 +173,7 @@ export function extractModelSizeFeaturesFromTrace(trace: AgentTrace): ModelSizeF
     subAgents: 0,
     autoModePredictedLabel: 0,
     autoModeConfidence: 0,
+    ...DEFAULT_TEMPORAL,
   };
 }
 
@@ -140,6 +200,8 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
   let autoModePredictedLabel = 0;
   let autoModeConfidence = 0;
   let totalElapsedMs = 0;
+  let chatCount = 0;
+  let usedRealTokenCounts = false;
   const filesRead = new Set<string>();
   const filesEdited = new Set<string>();
   const toolSequence: string[] = [];
@@ -148,12 +210,15 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
     const m = e.metadata ?? {};
     switch (e.eventType) {
       case 'chat':
+        chatCount++;
         // chat 事件可能含 tokenCount(真实 token)或 messageLength(字符数)。
         // transcript 数据只有 messageLength,按 4 字符 ≈ 1 token 估算。
         if (m.tokenCount) {
           promptTokens += Number(m.tokenCount);
+          usedRealTokenCounts = true;
         } else if (m.contextToken) {
           promptTokens += Number(m.contextToken);
+          usedRealTokenCounts = true;
         } else if (m.messageLength) {
           promptTokens += Math.ceil(Number(m.messageLength) / 4);
         }
@@ -227,6 +292,12 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
     }
   }
 
+  // For transcript data (no real token counts), add base context estimate:
+  // system prompt + accumulated conversation history + code context from reads.
+  if (!usedRealTokenCounts && chatCount > 0) {
+    promptTokens += 2000 + chatCount * 500 + filesRead.size * 200;
+  }
+
   // Derive contextTokens as prompt + completion if not directly observed.
   contextTokens = contextTokens || promptTokens + completionTokens;
 
@@ -259,6 +330,7 @@ export function extractModelSizeFeaturesFromEvents(events: IDEEvent[]): ModelSiz
     subAgents,
     autoModePredictedLabel,
     autoModeConfidence,
+    ...extractTemporalFeatures(events),
   };
 }
 

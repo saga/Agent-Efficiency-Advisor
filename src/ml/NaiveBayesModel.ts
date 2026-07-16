@@ -16,7 +16,24 @@ import {
 } from './features.js';
 
 const NUM_CLASSES = 3;
-const VARIANCE_SMOOTHING = 1e-9; // 防止方差为 0
+const VARIANCE_SMOOTHING = 1e-6; // 防止方差为 0
+
+/** 需要做 log(1+x) 变换的计数/大范围特征 */
+const LOG_TRANSFORM_COLS = new Set([
+  'promptTokens', 'completionTokens', 'contextTokens',
+  'toolCalls', 'readFiles', 'edits', 'retries',
+  'uniqueFilesRead', 'uniqueFilesEdited', 'elapsedMs',
+  'chatDurationMs', 'toolDurationMs', 'idleMs',
+  'rollingAvgTokens', 'rollingAvgDuration', 'emaTokens',
+]);
+
+/** 对指定特征做 log(1+x) 变换，压缩大范围计数特征的动态范围 */
+function applyLogTransform(features: ModelSizeFeatures): number[] {
+  return FEATURE_COLUMNS.map((c) => {
+    const v = Number(features[c]);
+    return LOG_TRANSFORM_COLS.has(c) ? Math.log1p(v) : v;
+  });
+}
 
 interface NBModelData {
   means: number[][]; // [numClasses][numFeatures]
@@ -35,7 +52,7 @@ export class NaiveBayesModel implements TrainableModel {
   async train(samples: TrainingSample[], modelPath: string): Promise<TrainedModelInfo> {
     if (samples.length === 0) throw new Error('No training samples');
 
-    const X = samples.map((s) => FEATURE_COLUMNS.map((c) => Number(s.features[c])));
+    const X = samples.map((s) => applyLogTransform(s.features));
     const y = samples.map((s) => LABEL_INDEX[s.label]);
     const numFeatures = FEATURE_COLUMNS.length;
 
@@ -130,7 +147,7 @@ export class NaiveBayesModel implements TrainableModel {
   }
 
   async predict(features: ModelSizeFeatures): Promise<ModelPrediction> {
-    const x = FEATURE_COLUMNS.map((c) => Number(features[c]));
+    const x = applyLogTransform(features);
     const logProbs = this.computeLogProbs(x);
 
     // 归一化为概率

@@ -19,6 +19,7 @@ import { ConformalPredictor } from './ConformalPredictor.js';
 import { LabelPropagation, type AutoModeSignal } from './LabelPropagation.js';
 import { StackingMetaLearner } from './StackingMetaLearner.js';
 import { PseudoLabeler } from './PseudoLabeler.js';
+import { detectFeatureDrift } from './DriftDetector.js';
 import type { ModelSizeFeatures } from './features.js';
 
 export interface MultiModelTrainResult {
@@ -105,7 +106,7 @@ export class ModelTrainer {
     try {
       const catboostInfo = await this.trainCatBoost(samples, outDir);
       trainResults.push(catboostInfo);
-      console.log(`  ✓ ${catboostInfo.modelName}: trees=${(catboostInfo as any).iterations ?? 'n/a'}, samples=${catboostInfo.trainSamples}`);
+      console.log(`  ✓ ${catboostInfo.modelName}: accuracy=${catboostInfo.accuracy ? (catboostInfo.accuracy * 100).toFixed(1) + '%' : 'n/a'}, samples=${catboostInfo.trainSamples}`);
     } catch (err) {
       console.error(`  ✗ CatBoost failed: ${err}`);
     }
@@ -168,6 +169,9 @@ export class ModelTrainer {
       console.error(`  ✗ Stacking Meta Learner failed: ${err}`);
     }
 
+    // 7. Drift Detection — compare current features vs previous training baseline
+    this.checkDrift(samples, outDir);
+
     return {
       models: trainResults,
       totalSamples: samples.length,
@@ -215,8 +219,50 @@ export class ModelTrainer {
       modelType: 'catboost',
       modelPath: result.modelOut,
       trainSamples: samples.length,
+      accuracy: result.accuracy,
       featureImportance: result.featureImportance,
     };
+  }
+
+  /**
+   * Drift Detection — compare current training features vs previous baseline.
+   * Saves current features as new baseline for next training run.
+   */
+  private checkDrift(samples: TrainingSample[], outDir: string): void {
+    const baselinePath = path.join(outDir, 'drift-baseline.json');
+    const currentFeatures = samples.map((s) => s.features);
+
+    // Load previous baseline if it exists
+    if (fs.existsSync(baselinePath)) {
+      try {
+        const raw = fs.readFileSync(baselinePath, 'utf-8');
+        const baselineFeatures = JSON.parse(raw) as ModelSizeFeatures[];
+        if (baselineFeatures.length > 0) {
+          const report = detectFeatureDrift(baselineFeatures, currentFeatures);
+          console.log('\n───────── Drift Detection ─────────');
+          console.log(`  Baseline: ${baselineFeatures.length} samples | Current: ${currentFeatures.length} samples`);
+          console.log(`  Max PSI: ${report.maxPsi.toFixed(4)} | Avg PSI: ${report.avgPsi.toFixed(4)}`);
+          console.log(`  Recommendation: ${report.recommendation}`);
+          if (report.driftedFeatures.length > 0) {
+            console.log(`  Drifted features (${report.driftedFeatures.length}):`);
+            const top = report.results
+              .filter((r) => r.drifted)
+              .sort((a, b) => b.psi - a.psi)
+              .slice(0, 5);
+            for (const r of top) {
+              console.log(`    ${r.feature}: PSI=${r.psi.toFixed(4)}`);
+            }
+          } else {
+            console.log('  No significant drift detected.');
+          }
+        }
+      } catch {
+        // Baseline file corrupted, skip drift detection
+      }
+    }
+
+    // Save current features as new baseline
+    fs.writeFileSync(baselinePath, JSON.stringify(currentFeatures));
   }
 
   /**

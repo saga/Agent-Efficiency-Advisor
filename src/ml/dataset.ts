@@ -31,8 +31,12 @@ function pickLabel(index: number, total: number): ModelSizeLabel {
 
 function generateFeaturesForLabel(label: ModelSizeLabel): ModelSizeFeatures {
   const jitter = () => 0.8 + Math.random() * 0.4;
+  const randHour = () => Math.floor(Math.random() * 24);
+  const randDay = () => Math.floor(Math.random() * 7);
+  const randSessions = () => Math.floor(Math.random() * 4);
 
   if (label === 'mini') {
+    const hour = randHour();
     return {
       promptTokens: Math.round(2000 * jitter()),
       completionTokens: Math.round(500 * jitter()),
@@ -51,6 +55,23 @@ function generateFeaturesForLabel(label: ModelSizeLabel): ModelSizeFeatures {
       subAgents: 0,
       autoModePredictedLabel: 1,
       autoModeConfidence: 0.7 * jitter(),
+      hourOfDay: hour,
+      dayOfWeek: randDay(),
+      isWeekend: Math.random() > 0.7 ? 1 : 0,
+      chatDurationMs: Math.round(3000 * jitter()),
+      toolDurationMs: Math.round(2000 * jitter()),
+      idleMs: Math.round(1000 * jitter()),
+      chatToToolRatio: 1 * jitter(),
+      acceptRate: 0.9 * jitter(),
+      cancelRate: 0,
+      switchRate: 0,
+      toolSuccessRate: 0.95 * jitter(),
+      rollingAvgTokens: 0,
+      rollingAvgDuration: 0,
+      rollingAcceptRate: 0,
+      emaTokens: 0,
+      emaRetryRate: 0,
+      sessionsToday: randSessions(),
     };
   }
 
@@ -73,6 +94,23 @@ function generateFeaturesForLabel(label: ModelSizeLabel): ModelSizeFeatures {
       subAgents: 0,
       autoModePredictedLabel: Math.random() > 0.5 ? 1 : 2,
       autoModeConfidence: 0.5 * jitter(),
+      hourOfDay: randHour(),
+      dayOfWeek: randDay(),
+      isWeekend: Math.random() > 0.7 ? 1 : 0,
+      chatDurationMs: Math.round(15000 * jitter()),
+      toolDurationMs: Math.round(10000 * jitter()),
+      idleMs: Math.round(8000 * jitter()),
+      chatToToolRatio: 0.8 * jitter(),
+      acceptRate: 0.75 * jitter(),
+      cancelRate: 0.05 * jitter(),
+      switchRate: 0.02 * jitter(),
+      toolSuccessRate: 0.8 * jitter(),
+      rollingAvgTokens: 0,
+      rollingAvgDuration: 0,
+      rollingAcceptRate: 0,
+      emaTokens: 0,
+      emaRetryRate: 0,
+      sessionsToday: randSessions(),
     };
   }
 
@@ -94,6 +132,23 @@ function generateFeaturesForLabel(label: ModelSizeLabel): ModelSizeFeatures {
     subAgents: Math.round(2 * jitter()),
     autoModePredictedLabel: 2,
     autoModeConfidence: 0.85 * jitter(),
+    hourOfDay: randHour(),
+    dayOfWeek: randDay(),
+    isWeekend: Math.random() > 0.7 ? 1 : 0,
+    chatDurationMs: Math.round(60000 * jitter()),
+    toolDurationMs: Math.round(50000 * jitter()),
+    idleMs: Math.round(30000 * jitter()),
+    chatToToolRatio: 0.5 * jitter(),
+    acceptRate: 0.6 * jitter(),
+    cancelRate: 0.1 * jitter(),
+    switchRate: 0.05 * jitter(),
+    toolSuccessRate: 0.65 * jitter(),
+    rollingAvgTokens: 0,
+    rollingAvgDuration: 0,
+    rollingAcceptRate: 0,
+    emaTokens: 0,
+    emaRetryRate: 0,
+    sessionsToday: randSessions(),
   };
 }
 
